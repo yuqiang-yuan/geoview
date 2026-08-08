@@ -1,11 +1,13 @@
 <script lang="ts">
     import { onMount } from "svelte";
     import { VERSION, parseGgb, renderGgb } from "geoview";
+    import type { Renderer } from "geoview";
 
     let canvas: HTMLCanvasElement;
     let fileInput: HTMLInputElement;
     let status = "ready";
     let fileName = "";
+    let renderer: Renderer | null = null;
 
     function handleFile(e: Event) {
         const input = e.target as HTMLInputElement;
@@ -18,17 +20,60 @@
         file.arrayBuffer().then((buf) => {
             try {
                 const doc = parseGgb(buf);
-                status = `parsed: ${doc.construction.items.length} items, app=${doc.meta.app}`;
-
                 const w = canvas.clientWidth || 800;
                 const h = canvas.clientHeight || 600;
-                renderGgb(doc, canvas, { width: w, height: h });
+                renderer = renderGgb(doc, canvas, { width: w, height: h });
                 status = `rendered ${fileName} — ${doc.construction.items.length} items`;
             } catch (err) {
                 status = `error: ${(err as Error).message}`;
                 console.error(err);
             }
         });
+    }
+
+    // Pan: mouse drag
+    let dragging = false;
+    let lastX = 0;
+    let lastY = 0;
+
+    function onMouseDown(e: MouseEvent) {
+        if (!renderer || renderer.mode !== "2d") return;
+        dragging = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        canvas.style.cursor = "grabbing";
+    }
+
+    function onMouseMove(e: MouseEvent) {
+        if (!dragging || !renderer || renderer.mode !== "2d") return;
+        const dx = e.clientX - lastX;
+        const dy = e.clientY - lastY;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        renderer.pan(dx, dy);
+    }
+
+    function onMouseUp() {
+        dragging = false;
+        canvas.style.cursor = "default";
+    }
+
+    // Zoom: mouse wheel
+    function onWheel(e: WheelEvent) {
+        if (!renderer || renderer.mode !== "2d") return;
+        e.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        const cx = e.clientX - rect.left;
+        const cy = e.clientY - rect.top;
+        // Wheel up (deltaY < 0) = zoom in, wheel down = zoom out
+        const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+        renderer.zoom(factor, cx, cy);
+    }
+
+    // Reset view: double click
+    function onDblClick() {
+        if (!renderer || renderer.mode !== "2d") return;
+        renderer.resetView();
     }
 
     onMount(() => {
@@ -59,7 +104,21 @@
 </div>
 
 <div class="chart-container">
-    <canvas bind:this={canvas} width="800" height="600"></canvas>
+    <canvas
+        bind:this={canvas}
+        width="800"
+        height="600"
+        on:mousedown={onMouseDown}
+        on:mousemove={onMouseMove}
+        on:mouseup={onMouseUp}
+        on:mouseleave={onMouseUp}
+        on:wheel|nonpassive={onWheel}
+        on:dblclick={onDblClick}
+    ></canvas>
+</div>
+
+<div class="hint">
+    drag to pan · scroll to zoom · double-click to reset
 </div>
 
 <style>
@@ -109,5 +168,11 @@
         padding: 12px;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
         display: inline-block;
+    }
+    .hint {
+        margin-top: 8px;
+        font-size: 11px;
+        color: #666;
+        font-family: monospace;
     }
 </style>

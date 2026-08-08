@@ -7,6 +7,9 @@
  * - Axes with tick marks and numbers
  * - Function curves (sampled via mathjs)
  * - Other renderable types (point, line, segment, polygon, circle, text)
+ *
+ * Supports interactive pan (drag) and zoom (wheel) by maintaining
+ * a mutable viewport that is updated in place and re-rendered.
  */
 
 import type {
@@ -45,6 +48,23 @@ export function createRenderer2D(
 ): Renderer2D {
     const ctx = canvas.getContext("2d")!;
 
+    // Mutable viewport — updated by pan/zoom, used for all rendering
+    let viewport: Viewport2D = {
+        mode: "2d",
+        xZero: width / 2,
+        yZero: height / 2,
+        scaleX: 50,
+        scaleY: 50,
+        width,
+        height
+    };
+
+    // The initial viewport from the first render() call (for resetView)
+    let initialViewport: Viewport2D | undefined;
+
+    // The last scene passed to render() — used for re-render on pan/zoom
+    let currentScene: Scene | undefined;
+
     function setupCanvas() {
         canvas.style.width = width + "px";
         canvas.style.height = height + "px";
@@ -55,6 +75,48 @@ export function createRenderer2D(
 
     setupCanvas();
 
+    /**
+     * Internal: render a scene with the current viewport.
+     * Function renderables are re-sampled using the current visible
+     * data range so curves stay accurate when zoomed/panned.
+     */
+    function doRender(scene: Scene, vp: Viewport2D): void {
+        const w = vp.width;
+        const h = vp.height;
+
+        // Clear
+        ctx.clearRect(0, 0, w, h);
+        // Background
+        ctx.fillStyle = scene.bgColor ?? DEFAULT_BG;
+        ctx.fillRect(0, 0, w, h);
+
+        // Grid
+        if (scene.showGrid) {
+            drawGrid(ctx, vp, scene.gridColor ?? DEFAULT_GRID);
+        }
+
+        // Axes
+        if (scene.showAxes) {
+            drawAxes(ctx, vp, scene);
+        }
+
+        // Compute current visible data range for function re-sampling
+        const visXMin = dataX(vp, 0);
+        const visXMax = dataX(vp, w);
+        const visYMin = dataY(vp, h);
+        const visYMax = dataY(vp, 0);
+
+        // Renderables
+        for (const r of scene.renderables) {
+            if (!r.visible) continue;
+            if (r.kind === "function") {
+                drawFunction(ctx, r, vp, visXMin, visXMax, visYMin, visYMax);
+            } else {
+                drawRenderable(ctx, r, vp);
+            }
+        }
+    }
+
     return {
         mode: "2d",
         canvas,
@@ -62,32 +124,13 @@ export function createRenderer2D(
         dpr,
 
         render(scene: Scene): void {
-            const vp = scene.viewport as Viewport2D;
-            const w = vp.width;
-            const h = vp.height;
-
-            // Clear
-            ctx.clearRect(0, 0, w, h);
-
-            // Background
-            ctx.fillStyle = scene.bgColor ?? DEFAULT_BG;
-            ctx.fillRect(0, 0, w, h);
-
-            // Grid
-            if (scene.showGrid) {
-                drawGrid(ctx, vp, scene.gridColor ?? DEFAULT_GRID);
+            currentScene = scene;
+            // Adopt the scene's viewport as our current viewport
+            viewport = { ...scene.viewport as Viewport2D };
+            if (!initialViewport) {
+                initialViewport = { ...viewport };
             }
-
-            // Axes
-            if (scene.showAxes) {
-                drawAxes(ctx, vp, scene);
-            }
-
-            // Renderables
-            for (const r of scene.renderables) {
-                if (!r.visible) continue;
-                drawRenderable(ctx, r, vp);
-            }
+            doRender(scene, viewport);
         },
 
         clear(): void {
@@ -95,9 +138,80 @@ export function createRenderer2D(
         },
 
         resize(newWidth: number, newHeight: number): void {
+            const oldVp = { ...viewport };
             width = newWidth;
             height = newHeight;
             setupCanvas();
+            // Keep the same data center, adjust pixel dimensions
+            viewport = {
+                ...oldVp,
+                width: newWidth,
+                height: newHeight,
+                // Re-center origin proportionally
+                xZero: newWidth / 2 - (oldVp.width / 2 - oldVp.xZero),
+                yZero: newHeight / 2 - (oldVp.height / 2 - oldVp.yZero)
+            };
+            if (currentScene) {
+                doRender(currentScene, viewport);
+            }
+        },
+
+        pan(dx: number, dy: number): void {
+            viewport = {
+                ...viewport,
+                xZero: viewport.xZero + dx,
+                yZero: viewport.yZero + dy
+            };
+            if (currentScene) {
+                doRender(currentScene, viewport);
+            }
+        },
+
+        zoom(factor: number, centerX?: number, centerY?: number): void {
+            // Default zoom center = canvas center
+            const cx = centerX ?? viewport.width / 2;
+            const cy = centerY ?? viewport.height / 2;
+
+            // The data point under (cx, cy) should stay fixed after zoom.
+            // Before zoom: dataX = (cx - xZero) / scaleX
+            // After zoom:  we want (cx - newXZero) / newScaleX = same dataX
+            //   => newXZero = cx - dataX * newScaleX
+            const dxVal = (cx - viewport.xZero) / viewport.scaleX;
+            const dyVal = (cy - viewport.yZero) / viewport.scaleY;
+
+            const newScaleX = viewport.scaleX * factor;
+            const newScaleY = viewport.scaleY * factor;
+
+            viewport = {
+                ...viewport,
+                scaleX: newScaleX,
+                scaleY: newScaleY,
+                xZero: cx - dxVal * newScaleX,
+                yZero: cy - dyVal * newScaleY
+            };
+            if (currentScene) {
+                doRender(currentScene, viewport);
+            }
+        },
+
+        getViewport(): Viewport2D {
+            return { ...viewport };
+        },
+
+        setViewport(vp: Viewport2D): void {
+            viewport = { ...vp };
+            if (currentScene) {
+                doRender(currentScene, viewport);
+            }
+        },
+
+        resetView(): void {
+            if (initialViewport) {
+                viewport = { ...initialViewport };
+                if (currentScene) {
+                    doRender(currentScene, viewport);
+                }
+            }
         },
 
         dispose(): void {
@@ -215,7 +329,7 @@ function drawXTicks(
 
     const xStart = Math.ceil(xMin / xGridStep) * xGridStep;
     for (let x = xStart; x <= xMax; x += xGridStep) {
-        if (x === 0) continue; // skip origin
+        if (Math.abs(x) < 1e-10) continue; // skip origin
         const px = pixelX(vp, x);
         // Tick mark
         ctx.beginPath();
@@ -243,7 +357,7 @@ function drawYTicks(
 
     const yStart = Math.ceil(yMin / yGridStep) * yGridStep;
     for (let y = yStart; y <= yMax; y += yGridStep) {
-        if (y === 0) continue; // skip origin
+        if (Math.abs(y) < 1e-10) continue; // skip origin
         const py = pixelY(vp, y);
         // Tick mark
         ctx.beginPath();
@@ -298,7 +412,7 @@ function drawRenderable(
 ): void {
     switch (r.kind) {
         case "function":
-            drawFunction(ctx, r, vp);
+            // Should not reach here — functions are drawn via drawFunction
             break;
         case "point":
             drawPoint(ctx, r, vp);
@@ -348,11 +462,23 @@ function setLineStyle(
 function drawFunction(
     ctx: CanvasRenderingContext2D,
     r: RenderableFunction,
-    vp: Viewport2D
+    vp: Viewport2D,
+    visXMin: number,
+    visXMax: number,
+    visYMin: number,
+    visYMax: number
 ): void {
+    // Use the visible data range for sampling, so curves are accurate
+    // at any zoom level. Fall back to the renderable's stored range.
+    const xRange: [number, number] = [
+        Math.min(r.xRange[0], visXMin),
+        Math.max(r.xRange[1], visXMax)
+    ];
+    const yRange: [number, number] = [visYMin, visYMax];
+
     const segments = builtinSampler(r.expression, {
-        xRange: r.xRange,
-        yRange: r.yRange,
+        xRange,
+        yRange,
         angleUnit: r.angleUnit,
         nSamples: DEFAULT_SAMPLES,
         pixelWidth: vp.width
@@ -509,10 +635,11 @@ function drawText(
 ): void {
     const px = pixelX(vp, r.x);
     const py = pixelY(vp, r.y);
+    const fontSize = r.fontSize ?? 13;
 
+    ctx.font = `${fontSize}px sans-serif`;
     ctx.fillStyle = r.color ?? "#333333";
-    ctx.font = `${r.fontSize ?? 14}px sans-serif`;
     ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
+    ctx.textBaseline = "alphabetic";
     ctx.fillText(r.content, px, py);
 }

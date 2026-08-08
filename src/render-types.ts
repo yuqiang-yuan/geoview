@@ -277,6 +277,16 @@ export interface Renderer2D {
     clear(): void;
     /** Resize canvas */
     resize(width: number, height: number): void;
+    /** Pan by pixel delta (dx, dy) */
+    pan(dx: number, dy: number): void;
+    /** Zoom by factor around a pixel center point */
+    zoom(factor: number, centerX?: number, centerY?: number): void;
+    /** Get the current viewport */
+    getViewport(): Viewport2D;
+    /** Set the viewport directly */
+    setViewport(vp: Viewport2D): void;
+    /** Reset viewport to the original fit */
+    resetView(): void;
     /** Clean up resources */
     dispose(): void;
 }
