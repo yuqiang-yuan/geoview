@@ -70,6 +70,13 @@ export function compileExpression(
     };
 }
 
+/** Sign of a number: -1, 0, or +1. */
+function sgn(n: number): number {
+    if (n > 0) return 1;
+    if (n < 0) return -1;
+    return 0;
+}
+
 /**
  * Sample a compiled function over [xMin, xMax], producing polyline segments.
  * Splits at discontinuities (NaN, Infinity, steep jumps).
@@ -82,60 +89,181 @@ export function sampleFunction(
     const [xMin, xMax] = xRange;
     const step = (xMax - xMin) / (nSamples - 1);
 
-    // Collect valid points
+    // Collect valid points. Reject NaN/Infinity, and also reject y values
+    // outside the viewport range. Points near asymptotes with extreme y
+    // values would otherwise create long vertical lines. We allow a small
+    // margin beyond the viewport to avoid clipping legitimate steep curves.
+    const yLo = yRange[0];
+    const yHi = yRange[1];
+    const ySpan = yHi - yLo;
+    const rejectMin = yLo - ySpan * 0.5;
+    const rejectMax = yHi + ySpan * 0.5;
     const points: Array<{ x: number; y: number }> = [];
     for (let i = 0; i < nSamples; i++) {
         const x = xMin + step * i;
         const y = fn(x);
-        if (typeof y === "number" && !isNaN(y) && isFinite(y)) {
+        if (
+            typeof y === "number" &&
+            !isNaN(y) &&
+            isFinite(y) &&
+            y >= rejectMin &&
+            y <= rejectMax
+        ) {
             points.push({ x, y });
         }
     }
 
-    return splitDiscontinuities(points, yRange);
+    return splitDiscontinuities(points, fn, yRange);
+}
+
+/**
+ * Recursively check whether the interval [d0, d1] contains a true
+ * asymptote (y keeps going in the same direction) vs. a steep but
+ * continuous curve (y direction reverses).
+ *
+ * @param d0    left point
+ * @param d1    right point
+ * @param fn    the function (for sub-sampling)
+ * @param sign  the direction of y change we're checking
+ * @param level recursion depth (default 3)
+ * @returns refined boundary points + whether it's an asymptote
+ */
+interface AsymptoteCheck {
+    asymptote: boolean;
+    d0: { x: number; y: number };
+    d1: { x: number; y: number };
+}
+
+function checkAsymptote(
+    d0: { x: number; y: number },
+    d1: { x: number; y: number },
+    fn: (x: number) => number,
+    sign: number,
+    level: number
+): AsymptoteCheck {
+    if (level <= 0) {
+        return { asymptote: true, d0, d1 };
+    }
+
+    const n = 10;
+    const step = (d1.x - d0.x) / (n - 1);
+    let prevX: number | undefined;
+    let prevY: number | undefined;
+
+    for (let i = 0; i < n; i++) {
+        const x = d0.x + step * i;
+        let y: number;
+        try {
+            y = fn(x);
+        } catch {
+            continue;
+        }
+        if (typeof y !== "number" || isNaN(y) || !isFinite(y)) continue;
+
+        if (prevY !== undefined && prevX !== undefined) {
+            const deltaY = y - prevY;
+            const newSign = sgn(deltaY);
+            // If the direction matches the asymptote sign, keep recursing
+            if (newSign === sign) {
+                return checkAsymptote(
+                    { x: prevX, y: prevY },
+                    { x, y },
+                    fn,
+                    sign,
+                    level - 1
+                );
+            }
+        }
+
+        prevX = x;
+        prevY = y;
+    }
+
+    return { asymptote: false, d0, d1 };
 }
 
 /**
  * Split a point array into continuous segments at discontinuities.
  *
- * Detection: if the vertical jump |y2 - y1| between two adjacent
- * sample points exceeds a threshold based on the viewport y-range,
- * we assume there is an asymptote or discontinuity between them
- * and start a new segment.
+ * Algorithm (zoom-independent):
  *
- * The threshold is set to 3× the viewport y-span. This catches
- * tan(x) near π/2 (where y shoots from large-positive to large-negative)
- * without falsely splitting sin/cos curves (which stay within [-1, 1]).
+ * 1. Track the sign (direction) of y-change between consecutive points.
+ * 2. When the sign reverses (e.g. y was going up, now goes down) AND
+ *    the slope magnitude exceeds 1 (steeper than 45°), suspect an asymptote.
+ * 3. Recursively sub-sample the interval to confirm:
+ *    - If y keeps going in the same direction → true asymptote → split.
+ *    - If y reverses direction → steep but continuous → don't split.
+ * 4. Split points: the last point of the left segment and the first
+ *    point of the right segment are clamped to avoid drawing to infinity.
+ *
+ * This approach doesn't depend on the viewport y-range, so it works
+ * correctly at any zoom level.
  */
 function splitDiscontinuities(
     points: Array<{ x: number; y: number }>,
+    fn: (x: number) => number,
     yRange: [number, number]
 ): PolylineSegment[] {
     if (points.length < 2) {
         return points.length ? [{ points: [...points] }] : [];
     }
 
-    const ySpan = Math.abs(yRange[1] - yRange[0]);
-    const threshold = ySpan * 3;
-
     const segments: PolylineSegment[] = [];
     let current: Array<{ x: number; y: number }> = [points[0]];
+    let oldSign: number | undefined;
+    let oldDeltaX = Infinity;
 
     for (let i = 1; i < points.length; i++) {
-        const prev = points[i - 1];
-        const curr = points[i];
-        const dy = Math.abs(curr.y - prev.y);
+        const yOld = points[i - 1].y;
+        const yNew = points[i].y;
+        const deltaY = yNew - yOld;
+        const newSign = sgn(deltaY);
 
-        if (dy > threshold) {
-            // Discontinuity detected — start a new segment.
-            // Don't include either point in the "jump" since both
-            // are near the asymptote and thus inaccurate.
+        let isDiscontinuity = false;
+        let skipCurrent = false;
+
+        if (
+            current.length >= 2 &&
+            oldSign !== undefined &&
+            oldSign !== 0 &&
+            newSign !== 0 &&
+            oldSign !== newSign &&
+            Math.abs(deltaY / oldDeltaX) > 1
+        ) {
+            // Suspected asymptote — confirm with recursive sub-sampling
+            const check = checkAsymptote(
+                points[i - 1],
+                points[i],
+                fn,
+                newSign,
+                3
+            );
+            if (check.asymptote) {
+                // Drop both boundary points — the curve near the asymptote
+                // is inaccurate and would draw as a long vertical line.
+                // The segment ends at the previous point (before points[i-1]),
+                // the new segment starts at points[i+1] (next iteration).
+                if (current.length > 1) {
+                    current.pop();
+                }
+                isDiscontinuity = true;
+                skipCurrent = true;
+            }
+        }
+
+        if (isDiscontinuity) {
             if (current.length > 1) {
                 segments.push({ points: current });
             }
-            current = [curr];
+            // Start fresh — don't include points[i] (skipCurrent)
+            current = skipCurrent ? [] : [points[i]];
         } else {
-            current.push(curr);
+            current.push(points[i]);
+        }
+
+        if (current.length > 1) {
+            oldDeltaX = current[current.length - 1].x - current[current.length - 2].x;
+            oldSign = newSign;
         }
     }
 

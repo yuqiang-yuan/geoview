@@ -584,6 +584,13 @@ function drawFunction(
         ctx.globalAlpha = r.opacity;
     }
 
+    // Clip to the canvas bounds so curves near asymptotes that have
+    // large y values don't draw as long vertical lines across the screen.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, vp.width, vp.height);
+    ctx.clip();
+
     ctx.beginPath();
     for (const seg of segments) {
         if (seg.points.length < 2) continue;
@@ -595,6 +602,7 @@ function drawFunction(
         }
     }
     ctx.stroke();
+    ctx.restore();
 
     ctx.globalAlpha = 1;
     ctx.setLineDash([]);
