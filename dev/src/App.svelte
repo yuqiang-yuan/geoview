@@ -1,6 +1,6 @@
 <script lang="ts">
-    import { onMount, onDestroy } from "svelte";
-    import { VERSION } from "geoview";
+    import { onMount } from "svelte";
+    import { VERSION, parseGgb, renderGgb } from "geoview";
 
     let canvas: HTMLCanvasElement;
     let fileInput: HTMLInputElement;
@@ -13,19 +13,22 @@
         if (!file) return;
 
         fileName = file.name;
-        status = `loaded ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+        status = `loading ${file.name}...`;
 
-        // TODO: parse .ggb and render
-        const ctx = canvas.getContext("2d")!;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.fillStyle = "#333";
-        ctx.font = "14px system-ui";
-        ctx.textAlign = "center";
-        ctx.fillText(
-            `${fileName} — geoview v${VERSION}`,
-            canvas.width / 2,
-            canvas.height / 2
-        );
+        file.arrayBuffer().then((buf) => {
+            try {
+                const doc = parseGgb(buf);
+                status = `parsed: ${doc.construction.items.length} items, app=${doc.meta.app}`;
+
+                const w = canvas.clientWidth || 800;
+                const h = canvas.clientHeight || 600;
+                renderGgb(doc, canvas, { width: w, height: h });
+                status = `rendered ${fileName} — ${doc.construction.items.length} items`;
+            } catch (err) {
+                status = `error: ${(err as Error).message}`;
+                console.error(err);
+            }
+        });
     }
 
     onMount(() => {
@@ -52,6 +55,7 @@
         />
     </label>
     <span class="status">{status}</span>
+    <span class="version">v{VERSION}</span>
 </div>
 
 <div class="chart-container">
@@ -92,6 +96,12 @@
         font-size: 12px;
         color: #50fa7b;
         min-width: 40px;
+    }
+    .version {
+        font-family: monospace;
+        font-size: 12px;
+        color: #888;
+        margin-left: auto;
     }
     .chart-container {
         background: #ffffff;
