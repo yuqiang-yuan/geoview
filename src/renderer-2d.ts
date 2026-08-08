@@ -326,11 +326,11 @@ function setLineStyle(
     style?: number,
     thickness?: number
 ): void {
-    // GGB thickness (1-13) maps to Canvas pixels with a 0.6 factor,
+    // GGB thickness (1-13) maps to Canvas pixels with a 0.4 factor,
     // clamped to a minimum of 1px so thin lines stay visible.
     ctx.lineWidth = thickness !== undefined
-        ? Math.max(1, thickness * 0.6)
-        : 2;
+        ? Math.max(1, thickness * 0.4)
+        : 1;
     if (style === 1) {
         // Dashed
         ctx.setLineDash([8, 4]);
