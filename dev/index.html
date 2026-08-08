@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>geoview - dev playground</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            body {
+                font-family:
+                    system-ui,
+                    -apple-system,
+                    sans-serif;
+                background: #1a1a2e;
+                color: #e0e0e0;
+                padding: 20px;
+            }
+            h1 {
+                font-size: 18px;
+                margin-bottom: 12px;
+                color: #8be9fd;
+            }
+            .playground {
+                display: flex;
+                gap: 20px;
+                flex-wrap: wrap;
+            }
+            .chart-container {
+                background: #ffffff;
+                border-radius: 8px;
+                padding: 12px;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            }
+            .controls {
+                display: flex;
+                gap: 12px;
+                flex-wrap: wrap;
+                margin-bottom: 16px;
+            }
+            .controls label {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                font-size: 13px;
+            }
+            .controls input[type="file"] {
+                display: none;
+            }
+            .file-btn {
+                padding: 6px 16px;
+                border: 1px solid #444;
+                border-radius: 4px;
+                background: #2a2a4e;
+                color: #e0e0e0;
+                font-size: 13px;
+                cursor: pointer;
+            }
+            .file-btn:hover {
+                background: #3a3a5e;
+            }
+            .status {
+                font-family: monospace;
+                font-size: 12px;
+                color: #50fa7b;
+                min-width: 40px;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>geoview playground</h1>
+        <div id="app"></div>
+        <script type="module" src="./src/main.ts"></script>
+    </body>
+</html>

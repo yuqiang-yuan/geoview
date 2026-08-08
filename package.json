@@ -1,0 +1,50 @@
+{
+    "name": "geoview",
+    "version": "0.1.0",
+    "description": "A parser and renderer for .ggb (GeoGebra) files, rendered on Canvas 2D",
+    "type": "module",
+    "main": "./dist/geoview.js",
+    "module": "./dist/geoview.js",
+    "types": "./dist/types/index.d.ts",
+    "exports": {
+        ".": {
+            "import": "./dist/geoview.js",
+            "types": "./dist/types/index.d.ts"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "dev": "vite",
+        "build": "tsc && vite build",
+        "build:lib": "tsc",
+        "preview": "vite preview",
+        "typecheck": "tsc --noEmit"
+    },
+    "keywords": [
+        "geogebra",
+        "ggb",
+        "canvas",
+        "geometry",
+        "math",
+        "education",
+        "parser",
+        "renderer"
+    ],
+    "license": "MIT",
+    "devDependencies": {
+        "@sveltejs/vite-plugin-svelte": "^4.0.0",
+        "prettier-plugin-svelte": "^4.1.1",
+        "svelte": "^5.0.0",
+        "typescript": "^5.5.0",
+        "vite": "^5.4.0"
+    },
+    "dependencies": {
+        "mathjs": "^15.2.0"
+    },
+    "volta": {
+        "node": "22.23.2",
+        "yarn": "1.22.22"
+    }
+}
