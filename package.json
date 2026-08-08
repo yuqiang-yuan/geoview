@@ -46,7 +46,8 @@
     },
     "dependencies": {
         "fflate": "^0.8.3",
-        "mathjs": "^15.2.0"
+        "mathjs": "^15.2.0",
+        "three": "^0.185.0"
     },
     "volta": {
         "node": "22.23.2",
