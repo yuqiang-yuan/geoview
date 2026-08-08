@@ -7,4 +7,9 @@
  * its geometric objects (points, lines, circles, functions, etc.).
  */
 
-export const VERSION = "0.1.0";
+export { VERSION } from "./version";
+export { unzipGgb } from "./archive";
+export { parseXml } from "./parser";
+export { parseGgb } from "./api";
+export type * from "./types";
+export { GgbParseError } from "./types";
