@@ -18,5 +18,5 @@
         "noUnusedParameters": false
     },
     "include": ["src/**/*.ts"],
-    "exclude": ["dev", "node_modules", "dist"]
+    "exclude": ["dev", "node_modules", "dist", "test", "vitest.config.ts"]
 }
