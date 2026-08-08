@@ -23,6 +23,7 @@ import type {
     RenderableText,
     Renderer2D,
     Scene,
+    SceneAxis,
     Viewport2D
 } from "./render-types";
 import { builtinSampler } from "./sampler";
@@ -276,6 +277,32 @@ function niceStep(raw: number): number {
     return step * base;
 }
 
+/**
+ * Ensure a tick step produces at least `minPx` pixels between ticks.
+ * Multiplies the base step by 1/2/5/10/... until the pixel spacing
+ * is sufficient. This keeps tickDistance as the "unit" but prevents
+ * overcrowding when zoomed out.
+ */
+function ensureMinSpacing(
+    baseStep: number,
+    scale: number,
+    minPx: number
+): number {
+    const basePx = baseStep * scale;
+    if (basePx >= minPx) return baseStep;
+    // Multiply by powers of 10, trying 1/2/5 multipliers at each level
+    let mult = 1;
+    const candidates = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000];
+    for (const c of candidates) {
+        if (baseStep * c * scale >= minPx) {
+            mult = c;
+            break;
+        }
+        mult = c;
+    }
+    return baseStep * mult;
+}
+
 // ============================================================
 // Axes
 // ============================================================
@@ -290,6 +317,10 @@ function drawAxes(
     ctx.fillStyle = color;
     ctx.lineWidth = 1.5;
 
+    const hasArrows = scene.axesLineStyle === 1;
+    const xAxis = scene.axes?.find((a) => a.id === 0);
+    const yAxis = scene.axes?.find((a) => a.id === 1);
+
     // X axis (y = 0)
     const y0 = pixelY(vp, 0);
     if (y0 >= 0 && y0 <= vp.height) {
@@ -298,7 +329,19 @@ function drawAxes(
         ctx.lineTo(vp.width, y0);
         ctx.stroke();
 
-        drawXTicks(ctx, vp, scene, y0);
+        if (hasArrows) {
+            drawArrowHead(ctx, vp.width, y0, 0);
+        }
+
+        drawXTicks(ctx, vp, scene, y0, xAxis);
+
+        // Axis label (e.g. "x")
+        if (xAxis?.label) {
+            ctx.font = "italic 14px sans-serif";
+            ctx.textAlign = "right";
+            ctx.textBaseline = "bottom";
+            ctx.fillText(xAxis.label, vp.width - 8, y0 - 6);
+        }
     }
 
     // Y axis (x = 0)
@@ -309,26 +352,67 @@ function drawAxes(
         ctx.lineTo(x0, vp.height);
         ctx.stroke();
 
-        drawYTicks(ctx, vp, scene, x0);
+        if (hasArrows) {
+            drawArrowHead(ctx, x0, 0, -Math.PI / 2);
+        }
+
+        drawYTicks(ctx, vp, scene, x0, yAxis);
+
+        // Axis label (e.g. "y")
+        if (yAxis?.label) {
+            ctx.font = "italic 14px sans-serif";
+            ctx.textAlign = "left";
+            ctx.textBaseline = "top";
+            ctx.fillText(yAxis.label, x0 + 6, 8);
+        }
     }
+}
+
+/**
+ * Draw an arrowhead at (x, y) pointing in the direction `angle` (radians).
+ * Default points right (along +x axis).
+ */
+function drawArrowHead(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    angle: number = 0
+): void {
+    const size = 8;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(-size, -size / 2);
+    ctx.lineTo(-size, size / 2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
 }
 
 function drawXTicks(
     ctx: CanvasRenderingContext2D,
     vp: Viewport2D,
     scene: Scene,
-    y0: number
+    y0: number,
+    axis?: SceneAxis
 ): void {
-    const xGridStep = niceStep(50 / vp.scaleX);
+    // Use tickDistance as the base step, but ensure a minimum pixel
+    // spacing (~40px) by multiplying up when zoomed out.
+    const baseStep = axis?.tickDistance ?? niceStep(50 / vp.scaleX);
+    const step = ensureMinSpacing(baseStep, vp.scaleX, 40);
+
     const xMin = dataX(vp, 0);
     const xMax = dataX(vp, vp.width);
+    const showNumbers = axis?.showNumbers ?? true;
     const fontSize = 12;
     ctx.font = `${fontSize}px sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
 
-    const xStart = Math.ceil(xMin / xGridStep) * xGridStep;
-    for (let x = xStart; x <= xMax; x += xGridStep) {
+    const xStart = Math.ceil(xMin / step) * step;
+    for (let x = xStart; x <= xMax; x += step) {
         if (Math.abs(x) < 1e-10) continue; // skip origin
         const px = pixelX(vp, x);
         // Tick mark
@@ -337,7 +421,9 @@ function drawXTicks(
         ctx.lineTo(px, y0 + 3);
         ctx.stroke();
         // Label
-        ctx.fillText(formatNumber(x), px, y0 + 5);
+        if (showNumbers) {
+            ctx.fillText(formatNumber(x), px, y0 + 5);
+        }
     }
 }
 
@@ -345,18 +431,24 @@ function drawYTicks(
     ctx: CanvasRenderingContext2D,
     vp: Viewport2D,
     scene: Scene,
-    x0: number
+    x0: number,
+    axis?: SceneAxis
 ): void {
-    const yGridStep = niceStep(50 / vp.scaleY);
+    // Use tickDistance as the base step, but ensure a minimum pixel
+    // spacing (~40px) by multiplying up when zoomed out.
+    const baseStep = axis?.tickDistance ?? niceStep(50 / vp.scaleY);
+    const step = ensureMinSpacing(baseStep, vp.scaleY, 40);
+
     const yMin = dataY(vp, vp.height);
     const yMax = dataY(vp, 0);
+    const showNumbers = axis?.showNumbers ?? true;
     const fontSize = 12;
     ctx.font = `${fontSize}px sans-serif`;
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
 
-    const yStart = Math.ceil(yMin / yGridStep) * yGridStep;
-    for (let y = yStart; y <= yMax; y += yGridStep) {
+    const yStart = Math.ceil(yMin / step) * step;
+    for (let y = yStart; y <= yMax; y += step) {
         if (Math.abs(y) < 1e-10) continue; // skip origin
         const py = pixelY(vp, y);
         // Tick mark
@@ -365,7 +457,9 @@ function drawYTicks(
         ctx.lineTo(x0 + 3, py);
         ctx.stroke();
         // Label
-        ctx.fillText(formatNumber(y), x0 - 5, py);
+        if (showNumbers) {
+            ctx.fillText(formatNumber(y), x0 - 5, py);
+        }
     }
 }
 

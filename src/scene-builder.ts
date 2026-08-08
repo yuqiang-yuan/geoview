@@ -51,7 +51,9 @@ export function buildScene(
         label: a.label,
         unitLabel: a.unitLabel,
         showNumbers: a.showNumbers,
-        tickStyle: a.tickStyle
+        tickStyle: a.tickStyle,
+        tickDistance: a.tickDistance,
+        tickExpression: a.tickExpression
     }));
 
     // Build renderables from construction items
@@ -82,6 +84,7 @@ export function buildScene(
         gridColor: ggbColorToCss(view?.gridColor),
         showAxes: view?.evSettings?.axes ?? true,
         showGrid: view?.evSettings?.grid ?? false,
+        axesLineStyle: view?.axesLineStyle,
         axes,
         renderables,
         kernel: doc.kernel

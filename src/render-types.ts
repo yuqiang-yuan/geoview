@@ -217,6 +217,8 @@ export interface Scene {
     showAxes: boolean;
     /** Whether to show grid */
     showGrid: boolean;
+    /** Axes line style: 1 = with arrowheads, 0 = plain */
+    axesLineStyle?: number;
     /** Axis definitions */
     axes?: SceneAxis[];
     /** Renderable objects, sorted by zOrder */
@@ -233,6 +235,8 @@ export interface SceneAxis {
     unitLabel?: string;
     showNumbers?: boolean;
     tickStyle?: number;
+    tickDistance?: number;
+    tickExpression?: string;
 }
 
 // ============================================================

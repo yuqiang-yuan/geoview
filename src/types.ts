@@ -73,6 +73,10 @@ export interface GgbEuclidianView {
     bgColor?: GgbColor;
     axesColor?: GgbColor;
     gridColor?: GgbColor;
+    /** Axes line style from <lineStyle axes="1" grid="0"/>: 1=arrow, 0=plain */
+    axesLineStyle?: number;
+    /** Grid line style from <lineStyle axes="1" grid="0"/>: 0=plain, etc. */
+    gridLineStyle?: number;
     axes?: GgbAxis[];
 }
 
@@ -110,7 +114,8 @@ export interface GgbAxis {
     unitLabel?: string;
     tickStyle?: number;
     showNumbers?: boolean;
-    xTickDistance?: number;
+    tickDistance?: number;
+    tickExpression?: string;
     tickAngle?: number;
     axisCross?: number;
     positiveDirection?: boolean;

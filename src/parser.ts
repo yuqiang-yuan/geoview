@@ -247,6 +247,13 @@ function parseEuclidianView(el: XmlElement): GgbEuclidianView {
     view.axesColor = findChild(el, "axesColor", parseColor);
     view.gridColor = findChild(el, "gridColor", parseColor);
 
+    // Parse evView-level lineStyle: <lineStyle axes="1" grid="0"/>
+    const lsEl = firstChildEl(el, "lineStyle");
+    if (lsEl) {
+        view.axesLineStyle = getAttrNum(lsEl, "axes");
+        view.gridLineStyle = getAttrNum(lsEl, "grid");
+    }
+
     const axisEls = childEls(el, "axis");
     if (axisEls.length > 0) {
         view.axes = axisEls.map(parseAxis);
@@ -275,7 +282,8 @@ function parseAxis(el: XmlElement): GgbAxis {
         unitLabel: getAttr(el, "unitLabel"),
         tickStyle: getAttrNum(el, "tickStyle"),
         showNumbers: getAttrBool(el, "showNumbers"),
-        xTickDistance: getAttrNum(el, "xTickDistance"),
+        tickDistance: getAttrNum(el, "tickDistance"),
+        tickExpression: getAttr(el, "tickExpression"),
         tickAngle: getAttrNum(el, "tickAngle"),
         axisCross: getAttrNum(el, "axisCross"),
         positiveDirection: getAttrBool(el, "positiveDirection")
