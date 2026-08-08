@@ -10,9 +10,15 @@
  *
  * Supports interactive pan (drag) and zoom (wheel) by maintaining
  * a mutable viewport that is updated in place and re-rendered.
+ *
+ * Labels can be customised via a {@link LabelRenderer} callback —
+ * callers can use MathJax/KaTeX to render LaTeX into images.
  */
 
 import type {
+    LabelOptions,
+    LabelRenderResult,
+    LabelRenderer,
     Renderable,
     RenderableFunction,
     RenderablePoint,
@@ -36,6 +42,14 @@ const DEFAULT_FUNC = "#006758";
 
 const DEFAULT_SAMPLES = 800;
 
+/** A label draw task — collected during sync render, drawn async. */
+interface LabelTask {
+    text: string;
+    x: number;
+    y: number;
+    opts: LabelOptions;
+}
+
 /**
  * Create a Canvas 2D renderer.
  */
@@ -45,7 +59,8 @@ export function createRenderer2D(
     height: number,
     dpr: number = typeof window !== "undefined"
         ? window.devicePixelRatio || 1
-        : 1
+        : 1,
+    labelRenderer?: LabelRenderer
 ): Renderer2D {
     const ctx = canvas.getContext("2d")!;
 
@@ -66,6 +81,9 @@ export function createRenderer2D(
     // The last scene passed to render() — used for re-render on pan/zoom
     let currentScene: Scene | undefined;
 
+    // Token to cancel stale async label rendering
+    let renderToken = 0;
+
     function setupCanvas() {
         canvas.style.width = width + "px";
         canvas.style.height = height + "px";
@@ -80,6 +98,9 @@ export function createRenderer2D(
      * Internal: render a scene with the current viewport.
      * Function renderables are re-sampled using the current visible
      * data range so curves stay accurate when zoomed/panned.
+     *
+     * If a labelRenderer is provided, label drawing is deferred to
+     * after the sync pass (labels may be async via MathJax etc.).
      */
     function doRender(scene: Scene, vp: Viewport2D): void {
         const w = vp.width;
@@ -91,6 +112,9 @@ export function createRenderer2D(
         ctx.fillStyle = scene.bgColor ?? DEFAULT_BG;
         ctx.fillRect(0, 0, w, h);
 
+        // Collect label tasks for async pass
+        const labelTasks: LabelTask[] = [];
+
         // Grid
         if (scene.showGrid) {
             drawGrid(ctx, vp, scene.gridColor ?? DEFAULT_GRID);
@@ -98,7 +122,7 @@ export function createRenderer2D(
 
         // Axes
         if (scene.showAxes) {
-            drawAxes(ctx, vp, scene);
+            drawAxes(ctx, vp, scene, labelTasks);
         }
 
         // Compute current visible data range for function re-sampling
@@ -111,9 +135,39 @@ export function createRenderer2D(
         for (const r of scene.renderables) {
             if (!r.visible) continue;
             if (r.kind === "function") {
-                drawFunction(ctx, r, vp, visXMin, visXMax, visYMin, visYMax);
+                drawFunction(ctx, r, vp, visXMin, visXMax, visYMin, visYMax, labelTasks);
             } else {
-                drawRenderable(ctx, r, vp);
+                drawRenderable(ctx, r, vp, labelTasks);
+            }
+        }
+
+        // Async label pass
+        if (labelTasks.length > 0) {
+            const token = ++renderToken;
+            drawLabelsAsync(labelTasks, token);
+        }
+    }
+
+    /**
+     * Draw collected labels. Uses labelRenderer if provided, otherwise
+     * falls back to ctx.fillText. A render token cancels stale renders.
+     */
+    async function drawLabelsAsync(tasks: LabelTask[], token: number): Promise<void> {
+        for (const task of tasks) {
+            // Cancelled by a newer render
+            if (token !== renderToken) return;
+
+            if (labelRenderer) {
+                try {
+                    const result = await labelRenderer(task.text, task.opts);
+                    if (token !== renderToken) return;
+                    drawLabelResult(ctx, result, task.x, task.y, task.opts);
+                } catch {
+                    // Fall back to plain text on error
+                    drawLabelFallback(ctx, task.text, task.x, task.y, task.opts);
+                }
+            } else {
+                drawLabelFallback(ctx, task.text, task.x, task.y, task.opts);
             }
         }
     }
@@ -222,6 +276,64 @@ export function createRenderer2D(
 }
 
 // ============================================================
+// Label drawing helpers
+// ============================================================
+
+/**
+ * Draw a label result (string / image / canvas) at the given position.
+ */
+function drawLabelResult(
+    ctx: CanvasRenderingContext2D,
+    result: LabelRenderResult,
+    x: number,
+    y: number,
+    opts: LabelOptions
+): void {
+    if (typeof result === "string") {
+        drawLabelFallback(ctx, result, x, y, opts);
+    } else {
+        // Image or Canvas — draw with drawImage
+        const w = result.width;
+        const h = result.height;
+        let dx = x;
+        let dy = y;
+        const align = opts.align ?? "start";
+        const baseline = opts.baseline ?? "alphabetic";
+        if (align === "middle") dx -= w / 2;
+        else if (align === "end") dx -= w;
+        if (baseline === "middle") dy -= h / 2;
+        else if (baseline === "bottom") dy -= h;
+        // For "top" and "alphabetic", draw from top
+        ctx.drawImage(result, dx, dy);
+    }
+}
+
+/**
+ * Fallback: draw text with ctx.fillText.
+ */
+function drawLabelFallback(
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    x: number,
+    y: number,
+    opts: LabelOptions
+): void {
+    const fontSize = opts.fontSize ?? 13;
+    const italic = opts.italic ? "italic " : "";
+    ctx.font = `${italic}${fontSize}px sans-serif`;
+    ctx.fillStyle = opts.color ?? "#1c1c1f";
+    // Map LabelOptions align → Canvas textAlign
+    const alignMap: Record<string, CanvasTextAlign> = {
+        start: "left",
+        middle: "center",
+        end: "right"
+    };
+    ctx.textAlign = alignMap[opts.align ?? "start"] ?? "left";
+    ctx.textBaseline = opts.baseline ?? "alphabetic";
+    ctx.fillText(text, x, y);
+}
+
+// ============================================================
 // Grid
 // ============================================================
 
@@ -310,7 +422,8 @@ function ensureMinSpacing(
 function drawAxes(
     ctx: CanvasRenderingContext2D,
     vp: Viewport2D,
-    scene: Scene
+    scene: Scene,
+    labelTasks: LabelTask[]
 ): void {
     const color = scene.axisColor ?? DEFAULT_AXIS;
     ctx.strokeStyle = color;
@@ -333,14 +446,22 @@ function drawAxes(
             drawArrowHead(ctx, vp.width, y0, 0);
         }
 
-        drawXTicks(ctx, vp, scene, y0, xAxis);
+        drawXTicks(ctx, vp, scene, y0, xAxis, labelTasks);
 
         // Axis label (e.g. "x")
         if (xAxis?.label) {
-            ctx.font = "italic 14px sans-serif";
-            ctx.textAlign = "right";
-            ctx.textBaseline = "bottom";
-            ctx.fillText(xAxis.label, vp.width - 8, y0 - 6);
+            labelTasks.push({
+                text: xAxis.label,
+                x: vp.width - 8,
+                y: y0 - 6,
+                opts: {
+                    fontSize: 14,
+                    color,
+                    align: "end",
+                    baseline: "bottom",
+                    italic: true
+                }
+            });
         }
     }
 
@@ -356,14 +477,22 @@ function drawAxes(
             drawArrowHead(ctx, x0, 0, -Math.PI / 2);
         }
 
-        drawYTicks(ctx, vp, scene, x0, yAxis);
+        drawYTicks(ctx, vp, scene, x0, yAxis, labelTasks);
 
         // Axis label (e.g. "y")
         if (yAxis?.label) {
-            ctx.font = "italic 14px sans-serif";
-            ctx.textAlign = "left";
-            ctx.textBaseline = "top";
-            ctx.fillText(yAxis.label, x0 + 6, 8);
+            labelTasks.push({
+                text: yAxis.label,
+                x: x0 + 6,
+                y: 8,
+                opts: {
+                    fontSize: 14,
+                    color,
+                    align: "start",
+                    baseline: "top",
+                    italic: true
+                }
+            });
         }
     }
 }
@@ -396,7 +525,8 @@ function drawXTicks(
     vp: Viewport2D,
     scene: Scene,
     y0: number,
-    axis?: SceneAxis
+    axis: SceneAxis | undefined,
+    labelTasks: LabelTask[]
 ): void {
     // Use tickDistance as the base step, but ensure a minimum pixel
     // spacing (~40px) by multiplying up when zoomed out.
@@ -406,10 +536,7 @@ function drawXTicks(
     const xMin = dataX(vp, 0);
     const xMax = dataX(vp, vp.width);
     const showNumbers = axis?.showNumbers ?? true;
-    const fontSize = 12;
-    ctx.font = `${fontSize}px sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
+    const color = scene.axisColor ?? DEFAULT_AXIS;
 
     const xStart = Math.ceil(xMin / step) * step;
     for (let x = xStart; x <= xMax; x += step) {
@@ -422,7 +549,17 @@ function drawXTicks(
         ctx.stroke();
         // Label
         if (showNumbers) {
-            ctx.fillText(formatNumber(x), px, y0 + 5);
+            labelTasks.push({
+                text: formatNumber(x),
+                x: px,
+                y: y0 + 5,
+                opts: {
+                    fontSize: 12,
+                    color,
+                    align: "middle",
+                    baseline: "top"
+                }
+            });
         }
     }
 }
@@ -432,7 +569,8 @@ function drawYTicks(
     vp: Viewport2D,
     scene: Scene,
     x0: number,
-    axis?: SceneAxis
+    axis: SceneAxis | undefined,
+    labelTasks: LabelTask[]
 ): void {
     // Use tickDistance as the base step, but ensure a minimum pixel
     // spacing (~40px) by multiplying up when zoomed out.
@@ -442,10 +580,7 @@ function drawYTicks(
     const yMin = dataY(vp, vp.height);
     const yMax = dataY(vp, 0);
     const showNumbers = axis?.showNumbers ?? true;
-    const fontSize = 12;
-    ctx.font = `${fontSize}px sans-serif`;
-    ctx.textAlign = "right";
-    ctx.textBaseline = "middle";
+    const color = scene.axisColor ?? DEFAULT_AXIS;
 
     const yStart = Math.ceil(yMin / step) * step;
     for (let y = yStart; y <= yMax; y += step) {
@@ -458,7 +593,17 @@ function drawYTicks(
         ctx.stroke();
         // Label
         if (showNumbers) {
-            ctx.fillText(formatNumber(y), x0 - 5, py);
+            labelTasks.push({
+                text: formatNumber(y),
+                x: x0 - 5,
+                y: py,
+                opts: {
+                    fontSize: 12,
+                    color,
+                    align: "end",
+                    baseline: "middle"
+                }
+            });
         }
     }
 }
@@ -502,7 +647,8 @@ function dataY(vp: Viewport2D, py: number): number {
 function drawRenderable(
     ctx: CanvasRenderingContext2D,
     r: Renderable,
-    vp: Viewport2D
+    vp: Viewport2D,
+    labelTasks: LabelTask[]
 ): void {
     switch (r.kind) {
         case "function":
@@ -524,7 +670,7 @@ function drawRenderable(
             drawCircle(ctx, r, vp);
             break;
         case "text":
-            drawText(ctx, r, vp);
+            drawText(ctx, r, vp, labelTasks);
             break;
     }
 }
@@ -560,7 +706,8 @@ function drawFunction(
     visXMin: number,
     visXMax: number,
     visYMin: number,
-    visYMax: number
+    visYMax: number,
+    labelTasks: LabelTask[]
 ): void {
     // Use the visible data range for sampling, so curves are accurate
     // at any zoom level. Fall back to the renderable's stored range.
@@ -614,10 +761,17 @@ function drawFunction(
             const p = lastSeg.points[lastSeg.points.length - 1];
             const px = pixelX(vp, p.x);
             const py = pixelY(vp, p.y);
-            ctx.font = "13px sans-serif";
-            ctx.textAlign = "left";
-            ctx.textBaseline = "middle";
-            ctx.fillText(r.label, px + 6, py);
+            labelTasks.push({
+                text: r.label,
+                x: px + 6,
+                y: py,
+                opts: {
+                    fontSize: 13,
+                    color: r.color ?? DEFAULT_FUNC,
+                    align: "start",
+                    baseline: "middle"
+                }
+            });
         }
     }
 }
@@ -733,15 +887,22 @@ function drawCircle(
 function drawText(
     ctx: CanvasRenderingContext2D,
     r: RenderableText,
-    vp: Viewport2D
+    vp: Viewport2D,
+    labelTasks: LabelTask[]
 ): void {
     const px = pixelX(vp, r.x);
     const py = pixelY(vp, r.y);
     const fontSize = r.fontSize ?? 13;
 
-    ctx.font = `${fontSize}px sans-serif`;
-    ctx.fillStyle = r.color ?? "#333333";
-    ctx.textAlign = "left";
-    ctx.textBaseline = "alphabetic";
-    ctx.fillText(r.content, px, py);
+    labelTasks.push({
+        text: r.content,
+        x: px,
+        y: py,
+        opts: {
+            fontSize,
+            color: r.color ?? "#333333",
+            align: "start",
+            baseline: "alphabetic"
+        }
+    });
 }

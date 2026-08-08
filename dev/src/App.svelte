@@ -2,12 +2,16 @@
     import { onMount } from "svelte";
     import { VERSION, parseGgb, renderGgb } from "geoview";
     import type { Renderer } from "geoview";
+    import { createMathJaxLabelRenderer } from "./mathjax-labels";
 
     let canvas: HTMLCanvasElement;
     let fileInput: HTMLInputElement;
     let status = "ready";
     let fileName = "";
     let renderer: Renderer | null = null;
+
+    // MathJax label renderer — converts labels to LaTeX → SVG → Image
+    const labelRenderer = createMathJaxLabelRenderer();
 
     function handleFile(e: Event) {
         const input = e.target as HTMLInputElement;
@@ -22,7 +26,11 @@
                 const doc = parseGgb(buf);
                 const w = canvas.clientWidth || 800;
                 const h = canvas.clientHeight || 600;
-                renderer = renderGgb(doc, canvas, { width: w, height: h });
+                renderer = renderGgb(doc, canvas, {
+                    width: w,
+                    height: h,
+                    labelRenderer
+                });
                 status = `rendered ${fileName} — ${doc.construction.items.length} items`;
             } catch (err) {
                 status = `error: ${(err as Error).message}`;

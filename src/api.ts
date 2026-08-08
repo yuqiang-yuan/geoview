@@ -60,7 +60,8 @@ export function renderGgb(
             height,
             options.dpr ?? (typeof window !== "undefined"
                 ? window.devicePixelRatio || 1
-                : 1)
+                : 1),
+            options.labelRenderer
         );
         renderer.render(scene);
         return renderer;

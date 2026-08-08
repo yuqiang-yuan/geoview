@@ -322,6 +322,53 @@ export interface Renderer3D {
 export type Renderer = Renderer2D | Renderer3D;
 
 // ============================================================
+// Label rendering (open for caller customisation)
+// ============================================================
+
+/**
+ * Custom label renderer return type:
+ * - string: the renderer draws with `ctx.fillText`
+ * - HTMLImageElement | HTMLCanvasElement: the renderer draws with `ctx.drawImage`
+ *
+ * Callers can use MathJax/KaTeX to render LaTeX into an image first,
+ * then return it. The library doesn't care how text is generated —
+ * it only positions and draws the result.
+ */
+export type LabelRenderResult = string | HTMLImageElement | HTMLCanvasElement;
+
+/**
+ * Label/text style options passed to {@link LabelRenderer}.
+ */
+export interface LabelOptions {
+    /** Font size in CSS pixels */
+    fontSize?: number;
+    /** CSS color string */
+    color?: string;
+    /** Horizontal alignment relative to the anchor point */
+    align?: "start" | "middle" | "end";
+    /** Vertical alignment relative to the anchor point */
+    baseline?: "top" | "middle" | "bottom" | "alphabetic";
+    /** Italic style (for axis labels like *x*, *y*) */
+    italic?: boolean;
+}
+
+/**
+ * Custom label renderer.
+ *
+ * Called by the renderer whenever text needs to be drawn (axis labels,
+ * tick numbers, function labels, text objects). If not provided,
+ * the renderer falls back to `ctx.fillText` with plain text.
+ *
+ * @param text  raw text content (may contain LaTeX, interpreted by caller)
+ * @param opts  style options
+ * @returns     render result (image/canvas/plain text), may be async
+ */
+export type LabelRenderer = (
+    text: string,
+    opts?: LabelOptions
+) => LabelRenderResult | Promise<LabelRenderResult>;
+
+// ============================================================
 // Renderer factory
 // ============================================================
 
@@ -334,6 +381,8 @@ export interface RendererOptions {
     width?: number;
     /** Height in CSS pixels */
     height?: number;
+    /** Custom label renderer (e.g. MathJax/KaTeX) */
+    labelRenderer?: LabelRenderer;
     /** Device pixel ratio (defaults to window.devicePixelRatio) */
     dpr?: number;
 }
@@ -397,4 +446,6 @@ export interface RenderGgbOptions {
     dpr?: number;
     /** Sample count for function curves (default 800) */
     nSamples?: number;
+    /** Custom label renderer (e.g. MathJax/KaTeX) */
+    labelRenderer?: LabelRenderer;
 }
