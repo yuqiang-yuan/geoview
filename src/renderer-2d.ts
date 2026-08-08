@@ -352,6 +352,7 @@ function drawFunction(
 ): void {
     const segments = builtinSampler(r.expression, {
         xRange: r.xRange,
+        yRange: r.yRange,
         angleUnit: r.angleUnit,
         nSamples: DEFAULT_SAMPLES,
         pixelWidth: vp.width

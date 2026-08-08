@@ -134,6 +134,8 @@ export interface RenderableFunction extends RenderableBase {
     angleUnit: "degree" | "radian";
     /** X range to sample over [xMin, xMax] */
     xRange: [number, number];
+    /** Y range of the viewport [yMin, yMax] (for discontinuity detection) */
+    yRange: [number, number];
 }
 
 /** A point in 2D or 3D space */
@@ -345,6 +347,8 @@ export interface SamplerFn {
 export interface SamplerParams {
     /** X range to sample over */
     xRange: [number, number];
+    /** Y range of the viewport (for discontinuity detection) */
+    yRange: [number, number];
     /** Angle unit */
     angleUnit: "degree" | "radian";
     /** Number of samples */

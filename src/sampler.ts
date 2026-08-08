@@ -78,7 +78,7 @@ export function sampleFunction(
     fn: (x: number) => number,
     params: SamplerParams
 ): PolylineSegment[] {
-    const { xRange, nSamples } = params;
+    const { xRange, yRange, nSamples } = params;
     const [xMin, xMax] = xRange;
     const step = (xMax - xMin) / (nSamples - 1);
 
@@ -92,20 +92,31 @@ export function sampleFunction(
         }
     }
 
-    return splitDiscontinuities(points);
+    return splitDiscontinuities(points, yRange);
 }
 
 /**
  * Split a point array into continuous segments at discontinuities.
- * Detects asymptotes where the slope between consecutive points is
- * exceptionally steep compared to the surrounding region.
+ *
+ * Detection: if the vertical jump |y2 - y1| between two adjacent
+ * sample points exceeds a threshold based on the viewport y-range,
+ * we assume there is an asymptote or discontinuity between them
+ * and start a new segment.
+ *
+ * The threshold is set to 3× the viewport y-span. This catches
+ * tan(x) near π/2 (where y shoots from large-positive to large-negative)
+ * without falsely splitting sin/cos curves (which stay within [-1, 1]).
  */
 function splitDiscontinuities(
-    points: Array<{ x: number; y: number }>
+    points: Array<{ x: number; y: number }>,
+    yRange: [number, number]
 ): PolylineSegment[] {
     if (points.length < 2) {
         return points.length ? [{ points: [...points] }] : [];
     }
+
+    const ySpan = Math.abs(yRange[1] - yRange[0]);
+    const threshold = ySpan * 3;
 
     const segments: PolylineSegment[] = [];
     let current: Array<{ x: number; y: number }> = [points[0]];
@@ -113,43 +124,24 @@ function splitDiscontinuities(
     for (let i = 1; i < points.length; i++) {
         const prev = points[i - 1];
         const curr = points[i];
-        const dx = curr.x - prev.x;
-        const dy = curr.y - prev.y;
+        const dy = Math.abs(curr.y - prev.y);
 
-        if (dx === 0) {
-            continue; // skip duplicate x
-        }
-
-        const slope = Math.abs(dy / dx);
-
-        // Detect discontinuity: very steep slope that also has a sign change
-        // in slope direction (typical of asymptotes like tan(x))
-        let isDiscontinuity = false;
-
-        if (current.length >= 2) {
-            const prevSlope = Math.abs(
-                (current[current.length - 1].y - current[current.length - 2].y) /
-                (current[current.length - 1].x - current[current.length - 2].x)
-            );
-            // Heuristic: slope is much larger than previous slope AND
-            // y values have opposite signs (crossing through infinity)
-            const signChange =
-                (prev.y > 0 && curr.y < 0) || (prev.y < 0 && curr.y > 0);
-
-            if (slope > prevSlope * 3 && signChange) {
-                isDiscontinuity = true;
+        if (dy > threshold) {
+            // Discontinuity detected — start a new segment.
+            // Don't include either point in the "jump" since both
+            // are near the asymptote and thus inaccurate.
+            if (current.length > 1) {
+                segments.push({ points: current });
             }
-        }
-
-        if (isDiscontinuity) {
-            segments.push({ points: current });
             current = [curr];
         } else {
             current.push(curr);
         }
     }
 
-    if (current.length) segments.push({ points: current });
+    if (current.length > 1 || segments.length === 0) {
+        segments.push({ points: current });
+    }
     return segments;
 }
 

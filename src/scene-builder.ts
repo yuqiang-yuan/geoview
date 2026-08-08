@@ -40,6 +40,9 @@ export function buildScene(
     const range = extractDataRange(view);
     const xRange: [number, number] = options.xRange ??
         (range ? [range.xMin, range.xMax] : [-10, 10]);
+    const yRange: [number, number] = range
+        ? [range.yMin, range.yMax]
+        : [-10, 10];
 
     // Build axis definitions
     const axes: SceneAxis[] | undefined = view?.axes?.map((a) => ({
@@ -63,7 +66,8 @@ export function buildScene(
                 item,
                 element,
                 doc.kernel,
-                xRange
+                xRange,
+                yRange
             );
             if (r) renderables.push(r);
         }
@@ -106,7 +110,8 @@ function buildFunctionRenderable(
     expr: GgbExpression,
     element: GgbElement | undefined,
     kernel: GgbKernel | undefined,
-    xRange: [number, number]
+    xRange: [number, number],
+    yRange: [number, number]
 ): RenderableFunction | undefined {
     if (expr.type && expr.type !== "function") return undefined;
     if (!expr.exp) return undefined;
@@ -129,6 +134,7 @@ function buildFunctionRenderable(
         kind: "function",
         expression: expr.exp,
         angleUnit: kernel?.angleUnit === "degree" ? "degree" : "radian",
-        xRange
+        xRange,
+        yRange
     };
 }
