@@ -655,7 +655,7 @@ function drawRenderable(
             // Should not reach here — functions are drawn via drawFunction
             break;
         case "point":
-            drawPoint(ctx, r, vp);
+            drawPoint(ctx, r, vp, labelTasks);
             break;
         case "line":
             drawLine(ctx, r, vp);
@@ -685,17 +685,34 @@ function setLineStyle(
     ctx.lineWidth = thickness !== undefined
         ? Math.max(1, thickness * 0.4)
         : 1;
-    if (style === 1) {
-        // Dashed
-        ctx.setLineDash([8, 4]);
-    } else if (style === 2) {
-        // Dotted
-        ctx.setLineDash([2, 4]);
-    } else if (style === 3) {
-        // Dash-dot
-        ctx.setLineDash([8, 4, 2, 4]);
-    } else {
-        ctx.setLineDash([]);
+    // GGB line style type mapping:
+    // 0 = solid, 1 = short dash, 2 = dotted, 3 = dash-dot,
+    // 4 = long dash, 5 = dense dash, 10 = hidden,
+    // 15 = dashed (long), other high values = various dash patterns
+    switch (style) {
+        case 1:
+            ctx.setLineDash([6, 4]);
+            break;
+        case 2:
+            ctx.setLineDash([2, 4]);
+            break;
+        case 3:
+            ctx.setLineDash([8, 4, 2, 4]);
+            break;
+        case 4:
+            ctx.setLineDash([12, 4]);
+            break;
+        case 5:
+            ctx.setLineDash([4, 2]);
+            break;
+        case 15:
+            ctx.setLineDash([10, 5]);
+            break;
+        case 0:
+        case undefined:
+        default:
+            ctx.setLineDash([]);
+            break;
     }
 }
 
@@ -779,16 +796,78 @@ function drawFunction(
 function drawPoint(
     ctx: CanvasRenderingContext2D,
     r: RenderablePoint,
-    vp: Viewport2D
+    vp: Viewport2D,
+    labelTasks: LabelTask[]
 ): void {
     const px = pixelX(vp, r.x);
     const py = pixelY(vp, r.y);
-    const size = r.pointSize ?? 4;
+    const size = r.pointSize ?? 5;
+    const style = r.pointStyle ?? 0;
+    const color = r.color ?? "#1565C0";
 
-    ctx.fillStyle = r.color ?? "#333333";
-    ctx.beginPath();
-    ctx.arc(px, py, size, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.fillStyle = color;
+    ctx.strokeStyle = color;
+
+    switch (style) {
+        case 0: // Dot
+            ctx.beginPath();
+            ctx.arc(px, py, size, 0, Math.PI * 2);
+            ctx.fill();
+            break;
+        case 1: // Cross
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(px - size, py - size);
+            ctx.lineTo(px + size, py + size);
+            ctx.moveTo(px + size, py - size);
+            ctx.lineTo(px - size, py + size);
+            ctx.stroke();
+            break;
+        case 2: // Empty circle
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(px, py, size, 0, Math.PI * 2);
+            ctx.stroke();
+            break;
+        case 3: // Plus
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(px - size, py);
+            ctx.lineTo(px + size, py);
+            ctx.moveTo(px, py - size);
+            ctx.lineTo(px, py + size);
+            ctx.stroke();
+            break;
+        case 4: // Diamond
+            ctx.beginPath();
+            ctx.moveTo(px, py - size);
+            ctx.lineTo(px + size, py);
+            ctx.lineTo(px, py + size);
+            ctx.lineTo(px - size, py);
+            ctx.closePath();
+            ctx.fill();
+            break;
+        default: // Default: dot
+            ctx.beginPath();
+            ctx.arc(px, py, size, 0, Math.PI * 2);
+            ctx.fill();
+            break;
+    }
+
+    // Draw label if visible
+    if (r.showLabel && r.visible) {
+        labelTasks.push({
+            text: r.label,
+            x: px + (size + 4),
+            y: py - (size + 4),
+            opts: {
+                fontSize: 13,
+                color,
+                align: "start",
+                baseline: "bottom"
+            }
+        });
+    }
 }
 
 function drawLine(
