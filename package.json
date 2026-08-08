@@ -37,6 +37,7 @@
     "license": "MIT",
     "devDependencies": {
         "@sveltejs/vite-plugin-svelte": "^4.0.0",
+        "@types/three": "^0.185.4",
         "@xmldom/xmldom": "^0.9.10",
         "prettier-plugin-svelte": "^4.1.1",
         "svelte": "^5.0.0",
