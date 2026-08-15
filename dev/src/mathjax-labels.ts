@@ -127,19 +127,32 @@ export function createMathJaxLabelRenderer() {
             }
 
             // Render LaTeX to SVG
+            // em/ex are PIXEL metrics of the surrounding font: em = font
+            // size, ex = x-height (MathJax assumes ex = 0.5 * em by default).
+            // The ex/em ratio drives script (superscript/subscript) scaling -
+            // wrong values make exponents render LARGER than the base.
+            //
+            // Note: tex2svgPromise has no "color" option (MathJax ignores it).
+            // The output glyphs use fill/stroke="currentColor", which resolves
+            // to black when the SVG is loaded as a standalone <img> (no CSS
+            // context). So we bake the colour in after serialisation below.
             const svgWrapper = await mj.tex2svgPromise(tex, {
                 display: false,
-                em: fontSize / 12,
-                ex: fontSize / 6,
-                color
+                em: fontSize,
+                ex: fontSize / 2
             });
 
             // Get the <svg> element
             const svgEl = svgWrapper.querySelector("svg");
             if (!svgEl) return text;
 
-            // Serialize SVG to data URL
-            const svgStr = new XMLSerializer().serializeToString(svgEl);
+            // Serialize SVG to data URL, baking in the text colour: MathJax
+            // emits fill="currentColor"/stroke="currentColor" on the root <g>,
+            // which has no value in a standalone image. Replacing it with the
+            // actual colour makes the glyphs carry the GGB text colour.
+            const svgStr = new XMLSerializer()
+                .serializeToString(svgEl)
+                .replace(/currentColor/g, color);
             const dataUrl = "data:image/svg+xml;charset=utf-8," +
                 encodeURIComponent(svgStr);
 
