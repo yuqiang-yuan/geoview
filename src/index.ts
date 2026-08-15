@@ -22,10 +22,17 @@ export { buildViewport, extractDataRange, fitViewport } from "./viewport";
 export { compileExpression, sampleFunction, builtinSampler, ggbToMathJs } from "./sampler";
 export { classifyConic, sampleConic, matrixToCoefficients } from "./conic";
 export type { ConicCoefficients, ConicType, ConicSampleParams } from "./conic";
+export { fitPoly } from "./fitpoly";
+export type { FitPoint, FitResult } from "./fitpoly";
 export { buildScene } from "./scene-builder";
+export { Kernel } from "./kernel";
 
 // Rendering — 2D renderer
 export { createRenderer2D } from "./renderer-2d";
+
+// Interactive dragging (sliders + free points)
+export { createInteractive } from "./interactive";
+export type { Interactive, InteractiveOptions, HitTarget } from "./interactive";
 
 // High-level convenience: parse + render in one call
 export { renderGgb } from "./api";

@@ -27,6 +27,7 @@ import type {
     RenderableSegment,
     RenderablePolygon,
     RenderableCircle,
+    RenderableSlider,
     RenderableText,
     Renderer2D,
     Scene,
@@ -117,6 +118,9 @@ export function createRenderer2D(
         // Collect label tasks for async pass
         const labelTasks: LabelTask[] = [];
 
+        // GeoGebra rounding setting (decimals) drives number formatting.
+        const decimals = scene.kernel?.decimals;
+
         // Grid
         if (scene.showGrid) {
             drawGrid(ctx, vp, scene.gridColor ?? DEFAULT_GRID);
@@ -124,7 +128,7 @@ export function createRenderer2D(
 
         // Axes
         if (scene.showAxes) {
-            drawAxes(ctx, vp, scene, labelTasks);
+            drawAxes(ctx, vp, scene, labelTasks, decimals);
         }
 
         // Compute current visible data range for function re-sampling
@@ -141,7 +145,7 @@ export function createRenderer2D(
             } else if (r.kind === "conic") {
                 drawConic(ctx, r, vp, visXMin, visXMax, visYMin, visYMax, labelTasks);
             } else {
-                drawRenderable(ctx, r, vp, labelTasks);
+                drawRenderable(ctx, r, vp, labelTasks, decimals);
             }
         }
 
@@ -189,6 +193,14 @@ export function createRenderer2D(
             if (!initialViewport) {
                 initialViewport = { ...viewport };
             }
+            doRender(scene, viewport);
+        },
+
+        updateScene(scene: Scene): void {
+            // Re-render with a new scene WITHOUT resetting the viewport —
+            // interactive rebuilds (e.g. after dragging a slider) must
+            // preserve the current pan/zoom, unlike the initial render().
+            currentScene = scene;
             doRender(scene, viewport);
         },
 
@@ -430,7 +442,8 @@ function drawAxes(
     ctx: CanvasRenderingContext2D,
     vp: Viewport2D,
     scene: Scene,
-    labelTasks: LabelTask[]
+    labelTasks: LabelTask[],
+    decimals?: number
 ): void {
     const color = scene.axisColor ?? DEFAULT_AXIS;
     ctx.strokeStyle = color;
@@ -453,7 +466,7 @@ function drawAxes(
             drawArrowHead(ctx, vp.width, y0, 0);
         }
 
-        drawXTicks(ctx, vp, scene, y0, xAxis, labelTasks);
+        drawXTicks(ctx, vp, scene, y0, xAxis, labelTasks, decimals);
 
         // Axis label (e.g. "x")
         if (xAxis?.label) {
@@ -484,7 +497,7 @@ function drawAxes(
             drawArrowHead(ctx, x0, 0, -Math.PI / 2);
         }
 
-        drawYTicks(ctx, vp, scene, x0, yAxis, labelTasks);
+        drawYTicks(ctx, vp, scene, x0, yAxis, labelTasks, decimals);
 
         // Axis label (e.g. "y")
         if (yAxis?.label) {
@@ -533,7 +546,8 @@ function drawXTicks(
     scene: Scene,
     y0: number,
     axis: SceneAxis | undefined,
-    labelTasks: LabelTask[]
+    labelTasks: LabelTask[],
+    decimals?: number
 ): void {
     // Use tickDistance as the base step, but ensure a minimum pixel
     // spacing (~40px) by multiplying up when zoomed out.
@@ -557,7 +571,7 @@ function drawXTicks(
         // Label
         if (showNumbers) {
             labelTasks.push({
-                text: formatNumber(x),
+                text: formatNumber(x, decimals),
                 x: px,
                 y: y0 + 5,
                 opts: {
@@ -577,7 +591,8 @@ function drawYTicks(
     scene: Scene,
     x0: number,
     axis: SceneAxis | undefined,
-    labelTasks: LabelTask[]
+    labelTasks: LabelTask[],
+    decimals?: number
 ): void {
     // Use tickDistance as the base step, but ensure a minimum pixel
     // spacing (~40px) by multiplying up when zoomed out.
@@ -601,7 +616,7 @@ function drawYTicks(
         // Label
         if (showNumbers) {
             labelTasks.push({
-                text: formatNumber(y),
+                text: formatNumber(y, decimals),
                 x: x0 - 5,
                 y: py,
                 opts: {
@@ -615,8 +630,18 @@ function drawYTicks(
     }
 }
 
-function formatNumber(n: number): string {
+/**
+ * Format a number for display. When `decimals` is given (GeoGebra's
+ * rounding setting), round to that many decimal places and trim trailing
+ * zeros so integers stay clean. Otherwise fall back to 6 significant
+ * figures with exponential notation for very large/small magnitudes.
+ */
+function formatNumber(n: number, decimals?: number): string {
     if (Math.abs(n) < 1e-10) return "0";
+    if (decimals !== undefined && decimals >= 0) {
+        const fixed = n.toFixed(decimals).replace(/\.?0+$/, "");
+        return fixed === "" ? "0" : fixed;
+    }
     if (Math.abs(n) >= 1000 || Math.abs(n) < 0.001) {
         return n.toExponential(1);
     }
@@ -655,7 +680,8 @@ function drawRenderable(
     ctx: CanvasRenderingContext2D,
     r: Renderable,
     vp: Viewport2D,
-    labelTasks: LabelTask[]
+    labelTasks: LabelTask[],
+    decimals?: number
 ): void {
     switch (r.kind) {
         case "function":
@@ -678,6 +704,9 @@ function drawRenderable(
             break;
         case "text":
             drawText(ctx, r, vp, labelTasks);
+            break;
+        case "slider":
+            drawSlider(ctx, r, vp, labelTasks, decimals);
             break;
     }
 }
@@ -1069,8 +1098,9 @@ function drawText(
     vp: Viewport2D,
     labelTasks: LabelTask[]
 ): void {
-    const px = pixelX(vp, r.x);
-    const py = pixelY(vp, r.y);
+    // Absolute-screen text: x/y are already pixel coords (do not pan/zoom).
+    const px = r.absolute ? r.x : pixelX(vp, r.x);
+    const py = r.absolute ? r.y : pixelY(vp, r.y);
     const fontSize = r.fontSize ?? 13;
 
     // LaTeX content is passed through wrapped in \( \) so a LaTeX-aware
@@ -1091,6 +1121,85 @@ function drawText(
             align: "start",
             baseline: "alphabetic",
             serif: r.serif
+        }
+    });
+}
+
+/**
+ * Draw a slider (numeric drag control): a track line plus a knob whose
+ * position reflects the current value. The track and knob are in math
+ * coords so the slider pans/zooms with the rest of the construction. Line
+ * thickness, dash style and opacity come from the element's `<lineStyle>`
+ * (so e.g. the δ slider's thickness=10/opacity=100 are honoured).
+ */
+function drawSlider(
+    ctx: CanvasRenderingContext2D,
+    r: RenderableSlider,
+    vp: Viewport2D,
+    labelTasks: LabelTask[],
+    decimals?: number
+): void {
+    const range = r.max - r.min;
+    const t = range > 0 ? (r.value - r.min) / range : 0;
+    // Track endpoints in math coords.
+    const w = r.width;
+    const start = { x: r.x, y: r.y };
+    const end = r.horizontal
+        ? { x: r.x + w, y: r.y }
+        : { x: r.x, y: r.y - w }; // vertical: up = +y in math
+    const knob = {
+        x: start.x + (end.x - start.x) * t,
+        y: start.y + (end.y - start.y) * t
+    };
+
+    const color = r.color ?? "#333333";
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    // Honour the stored thickness/opacity (default 2px solid when absent).
+    setLineStyle(ctx, r.lineStyle, r.strokeWidth ?? 2);
+    if (r.opacity !== undefined) {
+        ctx.globalAlpha = r.opacity;
+    }
+
+    // Track
+    ctx.beginPath();
+    ctx.moveTo(pixelX(vp, start.x), pixelY(vp, start.y));
+    ctx.lineTo(pixelX(vp, end.x), pixelY(vp, end.y));
+    ctx.stroke();
+
+    // Knob
+    const kx = pixelX(vp, knob.x);
+    const ky = pixelY(vp, knob.y);
+    ctx.beginPath();
+    ctx.arc(kx, ky, 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+
+    // Label: name at the start, value near the knob.
+    if (r.showLabel) {
+        labelTasks.push({
+            text: r.label,
+            x: pixelX(vp, start.x),
+            y: pixelY(vp, start.y) - 8,
+            opts: {
+                fontSize: r.fontSize ?? 13,
+                color,
+                align: "start",
+                baseline: "bottom"
+            }
+        });
+    }
+    labelTasks.push({
+        text: formatNumber(r.value, decimals),
+        x: kx,
+        y: ky - 8,
+        opts: {
+            fontSize: r.fontSize ?? 12,
+            color,
+            align: "middle",
+            baseline: "bottom"
         }
     });
 }

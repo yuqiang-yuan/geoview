@@ -8,6 +8,7 @@
 
 import type { GgbDocument, GgbElement, GgbExpression, GgbKernel, GgbCoords } from "./types";
 import type {
+    KernelLike,
     Renderable,
     RenderableBase,
     RenderableConic,
@@ -15,7 +16,9 @@ import type {
     RenderablePoint,
     RenderableSegment,
     RenderableLine,
+    RenderableSlider,
     RenderableText,
+    ResolvedValue,
     Scene,
     SceneAxis,
     SceneBuildOptions,
@@ -67,11 +70,15 @@ export function buildScene(
     // label → element properties (visual style, coords, etc.)
     const elementMap = buildElementMap(doc);
 
-    // label → resolved 2D coordinates (for point references)
-    const coordMap = buildCoordMap(doc, elementMap);
+    // label → resolved 2D coordinates (for point references). When a kernel
+    // is present, prefer its live point coords over the stored XML coords
+    // (stored coords go stale the moment a free object is dragged).
+    const coordMap = buildCoordMap(doc, elementMap, options.kernel);
 
     // label → command that produced it (to know Segment(A,B) inputs)
     const outputLabelToCommand = buildCommandMap(doc);
+
+    const kernel = options.kernel;
 
     // --- Build renderables from construction items ---
 
@@ -82,7 +89,7 @@ export function buildScene(
             // Expression with type="point" → point renderable
             if (item.type === "point") {
                 const element = elementMap.get(item.label);
-                const r = buildPointRenderable(item.label, element);
+                const r = buildPointRenderable(item.label, element, kernel);
                 if (r) renderables.push(r);
                 continue;
             }
@@ -90,7 +97,9 @@ export function buildScene(
             // (content is a quoted string in exp)
             if (item.type === "text" || elementMap.get(item.label)?.type === "text") {
                 const element = elementMap.get(item.label);
-                const r = buildTextRenderable(item, element, doc.gui?.font?.size);
+                const r = buildTextRenderable(
+                    item.label, element, item.exp, doc.gui?.font?.size, kernel, undefined
+                );
                 if (r) renderables.push(r);
                 continue;
             }
@@ -105,7 +114,8 @@ export function buildScene(
                 doc.kernel,
                 xRange,
                 yRange,
-                options.showAsymptotes
+                options.showAsymptotes,
+                kernel
             );
             if (r) renderables.push(r);
         } else if (item.kind === "element") {
@@ -117,14 +127,14 @@ export function buildScene(
             if (existing) continue; // already built from expression
 
             if (item.type === "point") {
-                const r = buildPointRenderable(item.label, item);
+                const r = buildPointRenderable(item.label, item, kernel);
                 if (r) renderables.push(r);
             } else if (item.type === "segment") {
                 const cmd = outputLabelToCommand.get(item.label);
-                const r = buildSegmentRenderable(item, cmd, coordMap);
+                const r = buildSegmentRenderable(item, cmd, coordMap, kernel);
                 if (r) renderables.push(r);
             } else if (item.type === "line") {
-                const r = buildLineRenderable(item);
+                const r = buildLineRenderable(item, kernel);
                 if (r) renderables.push(r);
             } else if (item.type === "conic") {
                 // GeoGebra stores circles/ellipses/parabolas/hyperbolas
@@ -134,8 +144,38 @@ export function buildScene(
             } else if (item.type === "ray") {
                 // Ray handled like segment for now (TODO: extend to canvas edge)
                 const cmd = outputLabelToCommand.get(item.label);
-                const r = buildSegmentRenderable(item, cmd, coordMap);
+                const r = buildSegmentRenderable(item, cmd, coordMap, kernel);
                 if (r) renderables.push(r);
+            } else if (item.type === "function") {
+                // Function produced by a command (e.g. FitPoly) with no
+                // <expression> of its own — resolve its expression from the
+                // kernel's computed function value.
+                const r = buildFunctionRenderable(
+                    undefined,
+                    item,
+                    doc.kernel,
+                    xRange,
+                    yRange,
+                    options.showAsymptotes,
+                    kernel
+                );
+                if (r) renderables.push(r);
+            } else if (item.type === "numeric") {
+                const r = buildSliderRenderable(item, kernel, doc.gui?.font?.size);
+                if (r) renderables.push(r);
+            } else if (item.type === "text") {
+                // Text produced by a Text command (no <expression>): content
+                // comes from the command's first input, anchor from its second
+                // input (a point expression like "F - (0.1, 0.2)").
+                const cmd = outputLabelToCommand.get(item.label);
+                const content = cmd?.name === "Text" ? cmd.input[0] : undefined;
+                const anchorExp = cmd?.name === "Text" ? cmd.input[1] : undefined;
+                if (content !== undefined) {
+                    const r = buildTextRenderable(
+                        item.label, item, content, doc.gui?.font?.size, kernel, anchorExp
+                    );
+                    if (r) renderables.push(r);
+                }
             }
         }
     }
@@ -177,34 +217,31 @@ function buildElementMap(
 /**
  * Build a lookup map of point labels → normalized 2D coordinates.
  * GGB points use homogeneous coords (x, y, z) where z=1 for finite
- * points. We dehomogenize: actual_x = x/z, actual_y = y/z.
+ * points. We dehomogenize: actual_x = x/z, actual_y = y/z. When a kernel
+ * is present, its live point coords take precedence over stored coords.
  */
 function buildCoordMap(
     doc: GgbDocument,
-    elementMap: Map<string, GgbElement>
+    elementMap: Map<string, GgbElement>,
+    kernel?: KernelLike
 ): Map<string, { x: number; y: number }> {
     const map = new Map<string, { x: number; y: number }>();
     for (const item of doc.construction.items) {
-        if (item.kind === "element" && item.type === "point") {
-            const c = item.coords;
-            if (c) {
-                const z = c.z || 1;
-                map.set(item.label, {
-                    x: c.x / z,
-                    y: c.y / z
-                });
-            }
+        const label = item.kind === "element" ? item.label : item.kind === "expression" ? item.label : null;
+        if (!label) continue;
+        const kv = kernel?.getValue(label);
+        if (kv?.kind === "point") {
+            map.set(label, { x: kv.x, y: kv.y });
+            continue;
         }
-        if (item.kind === "expression" && item.type === "point") {
-            const el = elementMap.get(item.label);
-            const c = el?.coords;
-            if (c) {
-                const z = c.z || 1;
-                map.set(item.label, {
-                    x: c.x / z,
-                    y: c.y / z
-                });
-            }
+        const c = item.kind === "element"
+            ? item.coords
+            : item.kind === "expression" && item.type === "point"
+                ? elementMap.get(item.label)?.coords
+                : undefined;
+        if (c) {
+            const z = c.z || 1;
+            map.set(label, { x: c.x / z, y: c.y / z });
         }
     }
     return map;
@@ -238,23 +275,36 @@ function buildCommandMap(
  * Convert an expression + element pair into a RenderableFunction.
  */
 function buildFunctionRenderable(
-    expr: GgbExpression,
+    expr: GgbExpression | undefined,
     element: GgbElement | undefined,
-    kernel: GgbKernel | undefined,
+    ggbKernel: GgbKernel | undefined,
     xRange: [number, number],
     yRange: [number, number],
-    showAsymptotes?: boolean
+    showAsymptotes?: boolean,
+    kernel?: KernelLike
 ): RenderableFunction | undefined {
-    if (expr.type && expr.type !== "function") return undefined;
-    if (!expr.exp) return undefined;
+    const label = expr?.label ?? element?.label ?? "";
+    if (expr && expr.type && expr.type !== "function") return undefined;
 
-    const base = buildBase(expr.label, element);
+    // Resolve the expression string: from the <expression>, or — for
+    // command-produced functions (e.g. FitPoly output with no <expression>) —
+    // from the kernel's computed function value.
+    let expression: string | undefined;
+    if (expr?.exp && expr.exp.trim()) {
+        expression = expr.exp;
+    } else {
+        const fv = kernel?.getValue(label);
+        if (fv?.kind === "function") expression = fv.expression;
+    }
+    if (!expression) return undefined;
+
+    const base = buildBase(label, element, kernel);
 
     return {
         ...base,
         kind: "function",
-        expression: expr.exp,
-        angleUnit: kernel?.angleUnit === "degree" ? "degree" : "radian",
+        expression,
+        angleUnit: ggbKernel?.angleUnit === "degree" ? "degree" : "radian",
         xRange,
         yRange,
         showAsymptotes
@@ -262,36 +312,49 @@ function buildFunctionRenderable(
 }
 
 /**
- * Build a point renderable from an element.
+ * Build a point renderable from an element. When a kernel is present,
+ * its live point coords take precedence over the stored element coords.
  */
 function buildPointRenderable(
     label: string,
-    element: GgbElement | undefined
+    element: GgbElement | undefined,
+    kernel?: KernelLike
 ): RenderablePoint | undefined {
-    if (!element?.coords) return undefined;
-    const c = element.coords;
-    const z = c.z || 1;
+    const kv = kernel?.getValue(label);
+    let x: number | undefined;
+    let y: number | undefined;
+    if (kv?.kind === "point") {
+        x = kv.x;
+        y = kv.y;
+    } else if (element?.coords) {
+        const z = element.coords.z || 1;
+        x = element.coords.x / z;
+        y = element.coords.y / z;
+    }
+    if (x === undefined || y === undefined) return undefined;
 
-    const base = buildBase(label, element);
+    const base = buildBase(label, element, kernel);
 
     return {
         ...base,
         kind: "point",
-        x: c.x / z,
-        y: c.y / z,
-        pointSize: element.pointSize,
-        pointStyle: element.pointStyle
+        x,
+        y,
+        pointSize: element?.pointSize,
+        pointStyle: element?.pointStyle
     };
 }
 
 /**
  * Build a segment renderable from an element + its producing command.
- * The command's inputs reference the two endpoint labels.
+ * The command's inputs reference the two endpoint labels (resolved via
+ * coordMap, which already reflects kernel coords when present).
  */
 function buildSegmentRenderable(
     element: GgbElement,
     cmd: { name: string; input: string[] } | undefined,
-    coordMap: Map<string, { x: number; y: number }>
+    coordMap: Map<string, { x: number; y: number }>,
+    kernel?: KernelLike
 ): RenderableSegment | undefined {
     // Try to get endpoints from command inputs
     let p1: { x: number; y: number } | undefined;
@@ -310,7 +373,7 @@ function buildSegmentRenderable(
         return undefined;
     }
 
-    const base = buildBase(element.label, element);
+    const base = buildBase(element.label, element, kernel);
 
     return {
         ...base,
@@ -327,12 +390,13 @@ function buildSegmentRenderable(
  * Lines use homogeneous coords (a, b, c) for ax + by + c = 0.
  */
 function buildLineRenderable(
-    element: GgbElement
+    element: GgbElement,
+    kernel?: KernelLike
 ): RenderableLine | undefined {
     if (!element.coords) return undefined;
     const c = element.coords;
 
-    const base = buildBase(element.label, element);
+    const base = buildBase(element.label, element, kernel);
 
     return {
         ...base,
@@ -352,7 +416,7 @@ function buildConicRenderable(
     if (!element.matrix) return undefined;
     const co = matrixToCoefficients(element.matrix);
 
-    const base = buildBase(element.label, element);
+    const base = buildBase(element.label, element, undefined);
 
     return {
         ...base,
@@ -379,31 +443,64 @@ function unquoteText(exp: string): string {
 }
 
 /**
- * Build a text renderable from a text expression + element pair.
- * The anchor comes from the element's startPoint; font size falls back
- * to the GUI font size scaled by the element's sizeM multiplier.
+ * Build a text renderable. Content is a (possibly quoted) GeoGebra text
+ * string from an `<expression>` or a Text command's first input. Positioning:
+ *  - `<absoluteScreenLocation x= y=/>` → screen pixel coords that do NOT
+ *    pan/zoom with the view (flagged `absolute: true`).
+ *  - Text command's second input (a point expression like `"F - (0.1, 0.2)"`)
+ *    → evaluated live via the kernel so the label tracks dragging.
+ *  - `<startPoint x= y= z=/>` → stored math coords (a save-time snapshot
+ *    that goes stale when free objects move), used when no kernel anchor.
+ * Font size falls back to the GUI font size scaled by sizeM.
  */
 function buildTextRenderable(
-    expr: GgbExpression,
+    label: string,
     element: GgbElement | undefined,
-    guiFontSize: number | undefined
+    contentExp: string | undefined,
+    guiFontSize: number | undefined,
+    kernel?: KernelLike,
+    anchorExp?: string
 ): RenderableText | undefined {
-    const content = unquoteText(expr.exp);
+    if (contentExp === undefined) return undefined;
+    const content = unquoteText(contentExp);
     if (!content) return undefined;
 
-    const base = buildBase(expr.label, element);
+    const base = buildBase(label, element, kernel);
+
+    const size = element?.font?.size ?? 0;
+    const sizeM = element?.font?.sizeM ?? 1;
+
+    // Absolute screen positioning takes precedence over everything else.
+    const abs = element?.absoluteScreenLocation;
+    if (abs) {
+        return {
+            ...base,
+            kind: "text",
+            content,
+            x: abs.x,
+            y: abs.y,
+            absolute: true,
+            fontSize: size > 0 ? size : Math.round((guiFontSize ?? 16) * sizeM),
+            isLatex: element?.isLaTeX,
+            serif: element?.font?.isSerif
+        };
+    }
 
     const sp = element?.startPoint;
     const z = sp?.z || 1;
-    const size = element?.font?.size ?? 0;
-    const sizeM = element?.font?.sizeM ?? 1;
+
+    // Prefer a kernel-resolved anchor (live) over the stored startPoint
+    // (a save-time snapshot that goes stale when free objects move).
+    const kpt = kernel?.evalPoint(anchorExp);
+    const x = kpt ? kpt.x : (sp ? sp.x / z : 0);
+    const y = kpt ? kpt.y : (sp ? sp.y / z : 0);
 
     return {
         ...base,
         kind: "text",
         content,
-        x: sp ? sp.x / z : 0,
-        y: sp ? sp.y / z : 0,
+        x,
+        y,
         fontSize: size > 0 ? size : Math.round((guiFontSize ?? 16) * sizeM),
         isLatex: element?.isLaTeX,
         serif: element?.font?.isSerif
@@ -411,15 +508,55 @@ function buildTextRenderable(
 }
 
 /**
- * Build common base style from an element.
+ * Build a slider renderable from a `<element type="numeric">` with a
+ * `<slider>` child. The current value comes from the kernel (or the
+ * element's stored `<value>` as a fallback).
+ */
+function buildSliderRenderable(
+    element: GgbElement,
+    kernel: KernelLike | undefined,
+    guiFontSize: number | undefined
+): RenderableSlider | undefined {
+    const sl = element.slider;
+    if (!sl) return undefined;
+
+    const kv = kernel?.getValue(element.label);
+    const value = kv?.kind === "number" ? kv.value : element.value ?? sl.min;
+    const anchorX = sl.x ?? 0;
+    const anchorY = sl.y ?? 0;
+
+    const base = buildBase(element.label, element, kernel);
+
+    return {
+        ...base,
+        kind: "slider",
+        x: anchorX,
+        y: anchorY,
+        min: sl.min,
+        max: sl.max,
+        step: sl.step,
+        value,
+        width: sl.width ?? 4,
+        horizontal: sl.horizontal ?? true,
+        fontSize: guiFontSize
+    };
+}
+
+/**
+ * Build common base style from an element. When a kernel is present, a
+ * `<condition showObject="..."/>` is evaluated against the current values
+ * and ANDed with the `show.object` flag for the effective visibility.
  */
 function buildBase(
     label: string,
-    element: GgbElement | undefined
+    element: GgbElement | undefined,
+    kernel?: KernelLike
 ): RenderableBase {
+    const showObject = element?.show?.object !== false;
+    const condVisible = kernel ? kernel.evalCondition(element?.condition) : true;
     return {
         label,
-        visible: element?.show?.object !== false,
+        visible: showObject && condVisible,
         color: ggbColorToCss(element?.objColor),
         strokeWidth: element?.lineStyle?.thickness,
         lineStyle: element?.lineStyle?.type,

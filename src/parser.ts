@@ -521,6 +521,12 @@ function parseElementChild(el: XmlElement, element: GgbElement): void {
         case "slider":
             element.slider = parseSlider(el);
             break;
+        case "value":
+            element.value = getAttrNum(el, "val");
+            break;
+        case "condition":
+            element.condition = getAttr(el, "showObject");
+            break;
         case "font":
             element.font = parseFont(el);
             break;
@@ -533,6 +539,14 @@ function parseElementChild(el: XmlElement, element: GgbElement): void {
         case "startPoint":
             element.startPoint = parseCoords(el);
             break;
+        case "absoluteScreenLocation": {
+            const x = getAttrNum(el, "x");
+            const y = getAttrNum(el, "y");
+            if (x !== undefined && y !== undefined) {
+                element.absoluteScreenLocation = { x, y };
+            }
+            break;
+        }
         case "boundingBox": {
             const x = getAttrNum(el, "x");
             const y = getAttrNum(el, "y");
@@ -589,7 +603,9 @@ function parseSlider(el: XmlElement): GgbSlider {
         absolute: getAttrBool(el, "absolute"),
         width: getAttrNum(el, "width"),
         horizontal: getAttrBool(el, "horizontal"),
-        showSlider: getAttrBool(el, "showSlider")
+        showSlider: getAttrBool(el, "showSlider"),
+        x: getAttrNum(el, "x"),
+        y: getAttrNum(el, "y")
     };
 }
 

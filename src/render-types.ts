@@ -102,7 +102,8 @@ export type Renderable =
     | RenderablePolygon
     | RenderableCircle
     | RenderableConic
-    | RenderableText;
+    | RenderableText
+    | RenderableSlider;
 
 /** Common style fields shared by all renderables */
 export interface RenderableBase {
@@ -212,7 +213,7 @@ export interface RenderableText extends RenderableBase {
     kind: "text";
     /** Text content (quotes stripped; LaTeX source if isLatex) */
     content: string;
-    /** Anchor position */
+    /** Anchor position (math coords, or screen pixels when absolute) */
     x: number;
     y: number;
     z?: number;
@@ -222,6 +223,36 @@ export interface RenderableText extends RenderableBase {
     isLatex?: boolean;
     /** Serif font requested (from <font serif="true"/>) */
     serif?: boolean;
+    /**
+     * When true, x/y are screen pixel coordinates that do NOT pan/zoom with
+     * the view (from <absoluteScreenLocation/>). Otherwise x/y are math coords
+     * anchored via startPoint or a Text command's second argument.
+     */
+    absolute?: boolean;
+}
+
+/**
+ * Slider (numeric drag control) from `<element type="numeric">` with a
+ * `<slider>` child. The anchor `x,y` is the slider's start in math coords;
+ * `width` is the track length in math units along the slider axis. The
+ * renderer draws the track + knob and hit-tests the knob for dragging.
+ */
+export interface RenderableSlider extends RenderableBase {
+    kind: "slider";
+    /** Track start in math coords (from <slider x=.. y=..>) */
+    x: number;
+    y: number;
+    min: number;
+    max: number;
+    step?: number;
+    /** Current value */
+    value: number;
+    /** Track length in math units (GeoGebra slider "width") */
+    width: number;
+    /** Horizontal track (false = vertical) */
+    horizontal: boolean;
+    /** Font size for the value/label (from GUI font × sizeM, if applicable) */
+    fontSize?: number;
 }
 
 // ============================================================
@@ -271,6 +302,27 @@ export interface SceneAxis {
  * Build a renderable scene from a parsed document.
  * This is the bridge between parsing and rendering.
  */
+/**
+ * Structural view of the reactive kernel that scene building consumes.
+ * Defined here (rather than importing the concrete class) to keep
+ * render-types free of a runtime dependency on the kernel module.
+ */
+export interface KernelLike {
+    getValue(label: string): ResolvedValue | undefined;
+    /** Evaluate a point expression against current values (e.g. text anchors). */
+    evalPoint(exp: string | undefined): { x: number; y: number } | undefined;
+    evalCondition(cond: string | undefined): boolean;
+    freeObjects(): Array<{ label: string; kind: "point" | "number" }>;
+    sliderBounds(label: string): { min: number; max: number; step?: number } | undefined;
+    setValue(label: string, value: ResolvedValue): void;
+}
+
+/** A resolved kernel value: number, 2D point, or compiled function. */
+export type ResolvedValue =
+    | { kind: "number"; value: number }
+    | { kind: "point"; x: number; y: number }
+    | { kind: "function"; evaluate: (x: number) => number; expression: string };
+
 export interface SceneBuildOptions {
     /** Force a render mode (auto-detected from document if omitted) */
     mode?: RenderMode;
@@ -284,6 +336,14 @@ export interface SceneBuildOptions {
     nSamples?: number;
     /** Draw detected vertical asymptotes as dashed lines (default false) */
     showAsymptotes?: boolean;
+    /**
+     * Reactive evaluation kernel. When provided, the scene is built from the
+     * kernel's live values (point coords, FitPoly function expressions,
+     * slider values, conditional visibility) instead of the stored XML
+     * values, so dragging free objects updates the scene. Without a kernel
+     * the builder falls back to the stored-value static behaviour.
+     */
+    kernel?: KernelLike;
 }
 
 // ============================================================
@@ -303,6 +363,8 @@ export interface Renderer2D {
     dpr: number;
     /** Render a scene */
     render(scene: Scene): void;
+    /** Re-render a new scene preserving the current pan/zoom (interactive rebuilds) */
+    updateScene(scene: Scene): void;
     /** Clear the canvas */
     clear(): void;
     /** Resize canvas */

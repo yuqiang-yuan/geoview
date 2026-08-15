@@ -214,9 +214,27 @@ export interface GgbElement {
     isLaTeX?: boolean;
     animation?: GgbAnimation;
     slider?: GgbSlider;
+    /**
+     * Numeric value of a `<element type="numeric">` from `<value val="..."/>`.
+     * Drives slider/number objects and the objects that depend on them.
+     */
+    value?: number;
+    /**
+     * Visibility condition from `<condition showObject="..."/>` (a GeoGebra
+     * boolean expression, e.g. "δ ≠ 0"). Evaluated against the kernel's
+     * current values; the object is shown only when it is truthy (in
+     * addition to the `show.object` flag).
+     */
+    condition?: string;
     font?: GgbFont;
     algebra?: { symbolic?: boolean; type?: string };
     startPoint?: GgbCoords;
+    /**
+     * Absolute screen position for a text object
+     * (<absoluteScreenLocation x=.. y=../>) — pixel coordinates that do NOT
+     * pan/zoom with the view. Mutually exclusive with {@link startPoint}.
+     */
+    absoluteScreenLocation?: { x: number; y: number };
     boundingBox?: { x: number; y: number; width: number; height: number };
     inBackground?: boolean;
     listType?: string;
@@ -339,6 +357,9 @@ export interface GgbSlider {
     width?: number;
     horizontal?: boolean;
     showSlider?: boolean;
+    /** Slider anchor position in math coords (<slider x=.. y=..>). */
+    x?: number;
+    y?: number;
 }
 
 export interface GgbFont {
