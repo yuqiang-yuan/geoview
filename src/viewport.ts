@@ -87,11 +87,15 @@ export function fitViewport(
         scaleX = scaleY / axisRatio;
     }
 
-    // Center: compute xZero and yZero so the data range is centered
+    // Center: compute xZero and yZero so the data range is centered.
+    // X maps pixelX = xZero + x*scaleX (data right = pixel right), so the
+    // data center xc=(xMin+xMax)/2 lands at canvas centre when
+    //   xZero + xc*scaleX = targetWidth/2  =>  xZero = (W - (xMin+xMax)*scaleX)/2
+    // Y maps pixelY = yZero - y*scaleY (data up = pixel up, canvas y down),
+    // so the sign flips: yZero = (H + (yMin+yMax)*scaleY)/2. Using the same
+    // sign as X flips the origin's vertical placement for asymmetric ranges.
     const xZero = (targetWidth - (range.xMin + range.xMax) * scaleX) / 2;
-    const yZero = (targetHeight - (range.yMin + range.yMax) * scaleY) / 2;
-    // Note: yMin is negative (bottom), yMax is positive (top)
-    // Canvas y is downward, so yZero = pixel y of data y=0
+    const yZero = (targetHeight + (range.yMin + range.yMax) * scaleY) / 2;
 
     return {
         mode: "2d",
