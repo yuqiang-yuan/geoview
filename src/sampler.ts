@@ -87,6 +87,12 @@ function unchainComparison(cond: string): string {
  */
 export function ggbToMathJs(expr: string): string {
     let s = expr
+        // GeoGebra writes the mathematical constant e as the Unicode
+        // "SCRIPT SMALL E" (U+212F), sometimes U+2147 (ⅇ). mathjs uses
+        // plain "e", so normalize both before compiling - otherwise
+        // evaluation throws "Undefined symbol ℯ" and the whole curve
+        // renders as nothing (e.g. sinh: (ℯ^x - ℯ^(-x))/2).
+        .replace(/ℯ|ⅇ/g, "e")
         .replace(/≤/g, "<=")
         .replace(/≥/g, ">=")
         .replace(/≠/g, "!=")

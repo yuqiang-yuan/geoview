@@ -38,6 +38,21 @@ describe("exp.ggb - If[] function support", () => {
         expect(ggbToMathJs("a ∧ b ∨ c")).toBe("a  and  b  or  c");
     });
 
+    it("normalizes GeoGebra's U+212F/U+2147 constant e to mathjs e", () => {
+        // GeoGebra writes the mathematical constant e as "ℯ" (U+212F)
+        // or occasionally "ⅇ" (U+2147); mathjs needs plain "e".
+        expect(ggbToMathJs("ℯ^(x)")).toBe("e^(x)");
+        expect(ggbToMathJs("ⅇ^x")).toBe("e^x");
+    });
+
+    it("compiles and evaluates (e^x - e^-x)/2 as sinh", () => {
+        // exp-2.ggb stores sinh as h(x) = (ℯ^(x) - ℯ^((-x))) / 2
+        const fn = compileExpression("h(x) = (ℯ^(x) - ℯ^((-x))) / 2");
+        expect(fn(0)).toBeCloseTo(0, 10);
+        expect(fn(1)).toBeCloseTo(Math.sinh(1), 10);
+        expect(fn(-1)).toBeCloseTo(Math.sinh(-1), 10);
+    });
+
     it("compiles f(x) = If[0 ≤ x ≤ 1.1, x^(2)] with correct domain", () => {
         const fn = compileExpression("f(x) = If[0 ≤ x ≤ 1.1, x^(2)]");
         expect(fn(0.5)).toBeCloseTo(0.25, 10);
