@@ -101,6 +101,7 @@ export type Renderable =
     | RenderableSegment
     | RenderablePolygon
     | RenderableCircle
+    | RenderableConic
     | RenderableText;
 
 /** Common style fields shared by all renderables */
@@ -189,10 +190,27 @@ export interface RenderableCircle extends RenderableBase {
     radius: number;
 }
 
+/**
+ * Conic section (circle/ellipse/parabola/hyperbola) in implicit form:
+ * a*x^2 + b*x*y + c*y^2 + d*x + e*y + f = 0
+ *
+ * GeoGebra stores every conic this way (packed 3x3 symmetric matrix);
+ * the backend samples and draws it (see src/conic.ts).
+ */
+export interface RenderableConic extends RenderableBase {
+    kind: "conic";
+    a: number;
+    b: number;
+    c: number;
+    d: number;
+    e: number;
+    f: number;
+}
+
 /** Text label */
 export interface RenderableText extends RenderableBase {
     kind: "text";
-    /** Text content */
+    /** Text content (quotes stripped; LaTeX source if isLatex) */
     content: string;
     /** Anchor position */
     x: number;
@@ -200,6 +218,10 @@ export interface RenderableText extends RenderableBase {
     z?: number;
     /** Font size in pixels */
     fontSize?: number;
+    /** Content is LaTeX source (from <isLaTeX val="true"/>) */
+    isLatex?: boolean;
+    /** Serif font requested (from <font serif="true"/>) */
+    serif?: boolean;
 }
 
 // ============================================================
@@ -354,6 +376,8 @@ export interface LabelOptions {
     baseline?: "top" | "middle" | "bottom" | "alphabetic";
     /** Italic style (for axis labels like *x*, *y*) */
     italic?: boolean;
+    /** Serif font (for LaTeX-style text objects) */
+    serif?: boolean;
 }
 
 /**

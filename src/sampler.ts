@@ -27,6 +27,114 @@ export function extractExpression(exp: string): string {
 }
 
 /**
+ * Split "If[a, b, c, d, ...]" argument text on top-level commas,
+ * respecting bracket nesting and string literals.
+ */
+function splitTopLevel(s: string): string[] {
+    const parts: string[] = [];
+    let depth = 0;
+    let inString = false;
+    let start = 0;
+    for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (inString) {
+            if (ch === "\\" && i + 1 < s.length) {
+                i++; // skip escaped char
+            } else if (ch === "\"") {
+                inString = false;
+            }
+            continue;
+        }
+        if (ch === "\"") inString = true;
+        else if (ch === "(" || ch === "[" || ch === "{") depth++;
+        else if (ch === ")" || ch === "]" || ch === "}") depth--;
+        else if (ch === "," && depth === 0) {
+            parts.push(s.slice(start, i));
+            start = i + 1;
+        }
+    }
+    parts.push(s.slice(start));
+    return parts.map((p) => p.trim());
+}
+
+/**
+ * Break a chained comparison like "0 <= x <= 1.2" (which mathjs rejects)
+ * into "(0 <= x) && (x <= 1.2)".
+ */
+function unchainComparison(cond: string): string {
+    const parts = cond.split(/\s*(<=|>=|<|>|==|!=)\s*/);
+    // Split with a capture group yields [operand, op, operand, op, ...]:
+    // 2n+1 parts for n comparison operators; only unchain when n > 1
+    if (parts.length <= 3 || parts.length % 2 === 0) return cond;
+    const operands = parts.filter((_, i) => i % 2 === 0);
+    const ops = parts.filter((_, i) => i % 2 === 1);
+    const clauses: string[] = [];
+    for (let i = 0; i < ops.length; i++) {
+        clauses.push(`(${operands[i]} ${ops[i]} ${operands[i + 1]})`);
+    }
+    return clauses.join(" and ");
+}
+
+/**
+ * Translate GeoGebra-specific syntax to mathjs:
+ * - Unicode operators: <=, >=, !=, "and", "or"
+ * - If[c1, v1, c2, v2, ..., default] (conditional/piecewise function)
+ *   to nested ternaries, with chained comparisons unchained
+ *
+ * `If` args alternate condition/value with an optional trailing default;
+ * a missing default becomes NaN (curve gap), matching GeoGebra's
+ * undefined-outside-the-conditions behaviour.
+ */
+export function ggbToMathJs(expr: string): string {
+    let s = expr
+        .replace(/≤/g, "<=")
+        .replace(/≥/g, ">=")
+        .replace(/≠/g, "!=")
+        .replace(/∧/g, " and ")
+        .replace(/∨/g, " or ");
+
+    // Recursively rewrite If[...] calls (inside-out via repeated rewriting)
+    while (true) {
+        const m = /If\s*\[/i.exec(s);
+        if (!m) break;
+        const open = m.index + m[0].length - 1; // index of "["
+        let depth = 0;
+        let close = -1;
+        for (let i = open; i < s.length; i++) {
+            if (s[i] === "[") depth++;
+            else if (s[i] === "]") {
+                depth--;
+                if (depth === 0) {
+                    close = i;
+                    break;
+                }
+            }
+        }
+        if (close === -1) break; // unbalanced - leave as-is (compile fails safely)
+
+        const args = splitTopLevel(s.slice(open + 1, close)).map(ggbToMathJs);
+
+        if (args.length < 2) {
+            // Degenerate If - just the value or NaN
+            s = s.slice(0, m.index) + (args[0] ?? "NaN") + s.slice(close + 1);
+            continue;
+        }
+
+        const hasDefault = args.length % 2 === 1;
+        const valueCount = hasDefault ? args.length - 1 : args.length;
+        let acc = hasDefault ? args[args.length - 1] : "NaN";
+        for (let i = valueCount - 2; i >= 0; i -= 2) {
+            // args[i] = condition, args[i+1] = value
+            const cond = unchainComparison(args[i]);
+            acc = `(${cond} ? ${args[i + 1]} : ${acc})`;
+        }
+        s = s.slice(0, m.index) + acc + s.slice(close + 1);
+    }
+
+    return s;
+}
+
+/**
  * Compile a GeoGebra expression into an evaluatable function.
  *
  * Note: GeoGebra's `angleUnit` setting affects angle-typed objects (e.g. 45°)
@@ -43,7 +151,7 @@ export function compileExpression(
     expression: string,
     angleUnit: "degree" | "radian" = "radian"
 ): (x: number) => number {
-    const rhs = extractExpression(expression);
+    const rhs = ggbToMathJs(extractExpression(expression));
     let compiled: EvalFunction;
 
     try {

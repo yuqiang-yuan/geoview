@@ -203,6 +203,15 @@ export interface GgbElement {
     auxiliary?: boolean;
     caption?: string;
     decoration?: { type: number };
+    /**
+     * Conic matrix from <matrix A0..A5> - the symmetric 3x3 homogeneous
+     * matrix in GeoGebra's packed layout:
+     *   M = [[A0,A3,A4],[A3,A1,A5],[A4,A5,A2]]
+     * i.e. A0*x^2 + 2*A3*xy + A1*y^2 + 2*A4*x + 2*A5*y + A2 = 0
+     */
+    matrix?: GgbConicMatrix;
+    /** Whether a text object's content is LaTeX (<isLaTeX val="true"/>) */
+    isLaTeX?: boolean;
     animation?: GgbAnimation;
     slider?: GgbSlider;
     font?: GgbFont;
@@ -286,6 +295,19 @@ export interface GgbCoords {
     z: number;
 }
 
+/**
+ * Conic matrix packed as A0..A5 (GeoGebra's <matrix> element).
+ * Symmetric layout: M = [[A0,A3,A4],[A3,A1,A5],[A4,A5,A2]].
+ */
+export interface GgbConicMatrix {
+    A0: number;
+    A1: number;
+    A2: number;
+    A3: number;
+    A4: number;
+    A5: number;
+}
+
 export interface GgbColor {
     r: number;
     g: number;
@@ -321,6 +343,8 @@ export interface GgbSlider {
 
 export interface GgbFont {
     size?: number;
+    /** Font size multiplier (<font sizeM="1"/>); size=0 means sizeM x default */
+    sizeM?: number;
     isBold?: boolean;
     isItalic?: boolean;
     isSerif?: boolean;

@@ -19,6 +19,7 @@ import type {
     GgbConstruction,
     GgbConstructionItem,
     GgbCoords,
+    GgbConicMatrix,
     GgbDocument,
     GgbElement,
     GgbElementType,
@@ -497,6 +498,23 @@ function parseElementChild(el: XmlElement, element: GgbElement): void {
         case "decoration":
             element.decoration = { type: getAttrNum(el, "type") ?? 0 };
             break;
+        case "matrix": {
+            const m: GgbConicMatrix = {
+                A0: getAttrNum(el, "A0") ?? NaN,
+                A1: getAttrNum(el, "A1") ?? NaN,
+                A2: getAttrNum(el, "A2") ?? NaN,
+                A3: getAttrNum(el, "A3") ?? NaN,
+                A4: getAttrNum(el, "A4") ?? NaN,
+                A5: getAttrNum(el, "A5") ?? NaN
+            };
+            if (Object.values(m).every(Number.isFinite)) {
+                element.matrix = m;
+            }
+            break;
+        }
+        case "isLaTeX":
+            element.isLaTeX = getAttrBool(el, "val") ?? false;
+            break;
         case "animation":
             element.animation = parseAnimation(el);
             break;
@@ -578,9 +596,10 @@ function parseSlider(el: XmlElement): GgbSlider {
 function parseFont(el: XmlElement): GgbFont {
     return {
         size: getAttrNum(el, "size"),
+        sizeM: getAttrNum(el, "sizeM"),
         isBold: getAttrBool(el, "isBold"),
         isItalic: getAttrBool(el, "isItalic"),
-        isSerif: getAttrBool(el, "isSerif")
+        isSerif: getAttrBool(el, "isSerif") ?? getAttrBool(el, "serif")
     };
 }
 

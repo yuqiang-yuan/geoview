@@ -10,10 +10,12 @@ import type { GgbDocument, GgbElement, GgbExpression, GgbKernel, GgbCoords } fro
 import type {
     Renderable,
     RenderableBase,
+    RenderableConic,
     RenderableFunction,
     RenderablePoint,
     RenderableSegment,
     RenderableLine,
+    RenderableText,
     Scene,
     SceneAxis,
     SceneBuildOptions,
@@ -21,6 +23,7 @@ import type {
 } from "./render-types";
 import { ggbColorToCss } from "./render-types";
 import { buildViewport, extractDataRange } from "./viewport";
+import { matrixToCoefficients } from "./conic";
 
 /**
  * Build a Scene from a parsed GgbDocument.
@@ -83,6 +86,17 @@ export function buildScene(
                 if (r) renderables.push(r);
                 continue;
             }
+            // Expression with type="text" → text renderable
+            // (content is a quoted string in exp)
+            if (item.type === "text" || elementMap.get(item.label)?.type === "text") {
+                const element = elementMap.get(item.label);
+                const r = buildTextRenderable(item, element, doc.gui?.font?.size);
+                if (r) renderables.push(r);
+                continue;
+            }
+            // String literal (exp starts with a quote) that is not a text
+            // object - skip instead of feeding it to the sampler
+            if (item.exp.startsWith("\"")) continue;
             // Expression with type="function" (or no type) → function renderable
             const element = elementMap.get(item.label);
             const r = buildFunctionRenderable(
@@ -111,6 +125,11 @@ export function buildScene(
                 if (r) renderables.push(r);
             } else if (item.type === "line") {
                 const r = buildLineRenderable(item);
+                if (r) renderables.push(r);
+            } else if (item.type === "conic") {
+                // GeoGebra stores circles/ellipses/parabolas/hyperbolas
+                // uniformly as type="conic" with a packed matrix
+                const r = buildConicRenderable(item);
                 if (r) renderables.push(r);
             } else if (item.type === "ray") {
                 // Ray handled like segment for now (TODO: extend to canvas edge)
@@ -321,6 +340,73 @@ function buildLineRenderable(
         a: c.x,
         b: c.y,
         c: c.z
+    };
+}
+
+/**
+ * Build a conic renderable from an element's packed matrix.
+ */
+function buildConicRenderable(
+    element: GgbElement
+): RenderableConic | undefined {
+    if (!element.matrix) return undefined;
+    const co = matrixToCoefficients(element.matrix);
+
+    const base = buildBase(element.label, element);
+
+    return {
+        ...base,
+        kind: "conic",
+        a: co.a,
+        b: co.b,
+        c: co.c,
+        d: co.d,
+        e: co.e,
+        f: co.f
+    };
+}
+
+/**
+ * Strip the surrounding quotes from a GeoGebra text expression
+ * (e.g. "\"y=x^2\"" -> "y=x^2").
+ */
+function unquoteText(exp: string): string {
+    let s = exp.trim();
+    if (s.length >= 2 && s.startsWith("\"") && s.endsWith("\"")) {
+        s = s.slice(1, -1);
+    }
+    return s;
+}
+
+/**
+ * Build a text renderable from a text expression + element pair.
+ * The anchor comes from the element's startPoint; font size falls back
+ * to the GUI font size scaled by the element's sizeM multiplier.
+ */
+function buildTextRenderable(
+    expr: GgbExpression,
+    element: GgbElement | undefined,
+    guiFontSize: number | undefined
+): RenderableText | undefined {
+    const content = unquoteText(expr.exp);
+    if (!content) return undefined;
+
+    const base = buildBase(expr.label, element);
+
+    const sp = element?.startPoint;
+    const z = sp?.z || 1;
+    const size = element?.font?.size ?? 0;
+    const sizeM = element?.font?.sizeM ?? 1;
+
+    return {
+        ...base,
+        kind: "text",
+        content,
+        x: sp ? sp.x / z : 0,
+        y: sp ? sp.y / z : 0,
+        fontSize: size > 0 ? size : Math.round((guiFontSize ?? 16) * sizeM),
+        isLatex: element?.isLaTeX,
+        serif: element?.font?.isSerif
     };
 }
 

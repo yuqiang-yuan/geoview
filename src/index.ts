@@ -19,7 +19,9 @@ export { ggbColorToCss, ggbColorToThree } from "./render-types";
 
 // Rendering — viewport, sampler, scene builder
 export { buildViewport, extractDataRange, fitViewport } from "./viewport";
-export { compileExpression, sampleFunction, builtinSampler } from "./sampler";
+export { compileExpression, sampleFunction, builtinSampler, ggbToMathJs } from "./sampler";
+export { classifyConic, sampleConic, matrixToCoefficients } from "./conic";
+export type { ConicCoefficients, ConicType, ConicSampleParams } from "./conic";
 export { buildScene } from "./scene-builder";
 
 // Rendering — 2D renderer

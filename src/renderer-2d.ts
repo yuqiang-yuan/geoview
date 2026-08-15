@@ -20,6 +20,7 @@ import type {
     LabelRenderResult,
     LabelRenderer,
     Renderable,
+    RenderableConic,
     RenderableFunction,
     RenderablePoint,
     RenderableLine,
@@ -33,6 +34,7 @@ import type {
     Viewport2D
 } from "./render-types";
 import { builtinSampler } from "./sampler";
+import { sampleConic } from "./conic";
 
 // Default colors
 const DEFAULT_BG = "#ffffff";
@@ -136,6 +138,8 @@ export function createRenderer2D(
             if (!r.visible) continue;
             if (r.kind === "function") {
                 drawFunction(ctx, r, vp, visXMin, visXMax, visYMin, visYMax, labelTasks);
+            } else if (r.kind === "conic") {
+                drawConic(ctx, r, vp, visXMin, visXMax, visYMin, visYMax, labelTasks);
             } else {
                 drawRenderable(ctx, r, vp, labelTasks);
             }
@@ -320,7 +324,8 @@ function drawLabelFallback(
 ): void {
     const fontSize = opts.fontSize ?? 13;
     const italic = opts.italic ? "italic " : "";
-    ctx.font = `${italic}${fontSize}px sans-serif`;
+    const serif = opts.serif ? "serif" : "sans-serif";
+    ctx.font = `${italic}${fontSize}px ${serif}`;
     ctx.fillStyle = opts.color ?? "#1c1c1f";
     // Map LabelOptions align → Canvas textAlign
     const alignMap: Record<string, CanvasTextAlign> = {
@@ -330,7 +335,9 @@ function drawLabelFallback(
     };
     ctx.textAlign = alignMap[opts.align ?? "start"] ?? "left";
     ctx.textBaseline = opts.baseline ?? "alphabetic";
-    ctx.fillText(text, x, y);
+    // Strip LaTeX inline delimiters for plain-text fallback rendering
+    const stripped = text.replace(/^\\\((.*)\\\)$/s, "$1");
+    ctx.fillText(stripped, x, y);
 }
 
 // ============================================================
@@ -815,6 +822,77 @@ function drawFunction(
     }
 }
 
+function drawConic(
+    ctx: CanvasRenderingContext2D,
+    r: RenderableConic,
+    vp: Viewport2D,
+    visXMin: number,
+    visXMax: number,
+    visYMin: number,
+    visYMax: number,
+    labelTasks: LabelTask[]
+): void {
+    // Sample against the visible range so the curve stays accurate at any
+    // zoom (same strategy as function curves)
+    const result = sampleConic(
+        { a: r.a, b: r.b, c: r.c, d: r.d, e: r.e, f: r.f },
+        {
+            xRange: [visXMin, visXMax],
+            yRange: [visYMin, visYMax],
+            pixelWidth: vp.width,
+            pixelHeight: vp.height
+        }
+    );
+    const segments = result;
+
+    ctx.strokeStyle = r.color ?? DEFAULT_FUNC;
+    setLineStyle(ctx, r.lineStyle, r.strokeWidth ?? 3);
+    if (r.opacity !== undefined) {
+        ctx.globalAlpha = r.opacity;
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, vp.width, vp.height);
+    ctx.clip();
+
+    ctx.beginPath();
+    for (const seg of segments) {
+        if (seg.points.length < 2) continue;
+        const first = seg.points[0];
+        ctx.moveTo(pixelX(vp, first.x), pixelY(vp, first.y));
+        for (let i = 1; i < seg.points.length; i++) {
+            const p = seg.points[i];
+            ctx.lineTo(pixelX(vp, p.x), pixelY(vp, p.y));
+        }
+    }
+    ctx.stroke();
+
+    ctx.restore();
+
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+
+    // Draw label at the last point of the last segment
+    if (r.showLabel && segments.length > 0) {
+        const lastSeg = segments[segments.length - 1];
+        if (lastSeg.points.length > 0) {
+            const p = lastSeg.points[lastSeg.points.length - 1];
+            labelTasks.push({
+                text: r.label,
+                x: pixelX(vp, p.x) + 6,
+                y: pixelY(vp, p.y),
+                opts: {
+                    fontSize: 13,
+                    color: r.color ?? DEFAULT_FUNC,
+                    align: "start",
+                    baseline: "middle"
+                }
+            });
+        }
+    }
+}
+
 function drawPoint(
     ctx: CanvasRenderingContext2D,
     r: RenderablePoint,
@@ -995,15 +1073,24 @@ function drawText(
     const py = pixelY(vp, r.y);
     const fontSize = r.fontSize ?? 13;
 
+    // LaTeX content is passed through wrapped in \( \) so a LaTeX-aware
+    // label renderer (e.g. MathJax) picks it up verbatim; the playground's
+    // renderer forwards strings starting with \( unchanged, and the plain
+    // fallback strips the delimiters.
+    const text = r.isLatex && !r.content.trimStart().startsWith("\\(")
+        ? `\\(${r.content}\\)`
+        : r.content;
+
     labelTasks.push({
-        text: r.content,
+        text,
         x: px,
         y: py,
         opts: {
             fontSize,
             color: r.color ?? "#333333",
             align: "start",
-            baseline: "alphabetic"
+            baseline: "alphabetic",
+            serif: r.serif
         }
     });
 }
