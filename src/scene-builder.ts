@@ -90,7 +90,8 @@ export function buildScene(
                 element,
                 doc.kernel,
                 xRange,
-                yRange
+                yRange,
+                options.showAsymptotes
             );
             if (r) renderables.push(r);
         } else if (item.kind === "element") {
@@ -222,7 +223,8 @@ function buildFunctionRenderable(
     element: GgbElement | undefined,
     kernel: GgbKernel | undefined,
     xRange: [number, number],
-    yRange: [number, number]
+    yRange: [number, number],
+    showAsymptotes?: boolean
 ): RenderableFunction | undefined {
     if (expr.type && expr.type !== "function") return undefined;
     if (!expr.exp) return undefined;
@@ -235,7 +237,8 @@ function buildFunctionRenderable(
         expression: expr.exp,
         angleUnit: kernel?.angleUnit === "degree" ? "degree" : "radian",
         xRange,
-        yRange
+        yRange,
+        showAsymptotes
     };
 }
 

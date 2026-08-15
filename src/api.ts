@@ -50,7 +50,8 @@ export function renderGgb(
         mode,
         width,
         height,
-        nSamples: options.nSamples
+        nSamples: options.nSamples,
+        showAsymptotes: options.showAsymptotes
     });
 
     if (mode === "2d") {

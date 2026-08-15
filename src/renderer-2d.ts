@@ -734,13 +734,15 @@ function drawFunction(
     ];
     const yRange: [number, number] = [visYMin, visYMax];
 
-    const segments = builtinSampler(r.expression, {
+    const result = builtinSampler(r.expression, {
         xRange,
         yRange,
         angleUnit: r.angleUnit,
         nSamples: DEFAULT_SAMPLES,
-        pixelWidth: vp.width
+        pixelWidth: vp.width,
+        pixelHeight: vp.height
     });
+    const segments = result.segments;
 
     ctx.strokeStyle = r.color ?? DEFAULT_FUNC;
     setLineStyle(ctx, r.lineStyle, r.strokeWidth ?? 3);
@@ -766,6 +768,26 @@ function drawFunction(
         }
     }
     ctx.stroke();
+
+    // Detected vertical asymptotes: dashed lines through the view.
+    // Off by default (GeoGebra does not draw them); opt in per call
+    // or per function via showAsymptotes.
+    if (r.showAsymptotes === true && result.asymptotes.length > 0) {
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6, 6]);
+        for (const ax of result.asymptotes) {
+            if (ax < visXMin || ax > visXMax) continue;
+            const px = pixelX(vp, ax);
+            ctx.beginPath();
+            ctx.moveTo(px, 0);
+            ctx.lineTo(px, vp.height);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
     ctx.restore();
 
     ctx.globalAlpha = 1;

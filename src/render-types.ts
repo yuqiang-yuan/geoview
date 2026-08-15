@@ -136,6 +136,8 @@ export interface RenderableFunction extends RenderableBase {
     xRange: [number, number];
     /** Y range of the viewport [yMin, yMax] (for discontinuity detection) */
     yRange: [number, number];
+    /** Draw detected vertical asymptotes as dashed lines (default false) */
+    showAsymptotes?: boolean;
 }
 
 /** A point in 2D or 3D space */
@@ -258,6 +260,8 @@ export interface SceneBuildOptions {
     xRange?: [number, number];
     /** Number of samples for function curves */
     nSamples?: number;
+    /** Draw detected vertical asymptotes as dashed lines (default false) */
+    showAsymptotes?: boolean;
 }
 
 // ============================================================
@@ -396,15 +400,23 @@ export interface PolylineSegment {
     points: Array<{ x: number; y: number; z?: number }>;
 }
 
+/** Result of sampling a function: segments plus detected asymptotes. */
+export interface SampleResult {
+    /** Continuous polyline segments */
+    segments: PolylineSegment[];
+    /** X positions of detected vertical asymptotes */
+    asymptotes: number[];
+}
+
 /**
- * Sampler takes an expression string and produces polyline segments.
- * Handles asymptote splitting and NaN filtering.
+ * Sampler takes an expression string and produces polyline segments
+ * plus detected vertical asymptote positions.
  */
 export interface SamplerFn {
     (
         expression: string,
         params: SamplerParams
-    ): PolylineSegment[];
+    ): SampleResult;
 }
 
 export interface SamplerParams {
@@ -414,10 +426,12 @@ export interface SamplerParams {
     yRange: [number, number];
     /** Angle unit */
     angleUnit: "degree" | "radian";
-    /** Number of samples */
+    /** Number of samples (fallback when pixelWidth is unknown) */
     nSamples: number;
-    /** Pixel width (for adaptive sampling density) */
+    /** Pixel width (drives sampling density: 2 samples per pixel column) */
     pixelWidth: number;
+    /** Pixel height (used for pixel-space discontinuity detection) */
+    pixelHeight?: number;
 }
 
 // ============================================================
@@ -444,8 +458,10 @@ export interface RenderGgbOptions {
     height?: number;
     /** Device pixel ratio */
     dpr?: number;
-    /** Sample count for function curves (default 800) */
+    /** Sample count for function curves (fallback without pixel metrics) */
     nSamples?: number;
+    /** Draw detected vertical asymptotes as dashed lines (default false) */
+    showAsymptotes?: boolean;
     /** Custom label renderer (e.g. MathJax/KaTeX) */
     labelRenderer?: LabelRenderer;
 }
