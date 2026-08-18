@@ -141,6 +141,9 @@ export interface RenderableFunction extends RenderableBase {
     yRange: [number, number];
     /** Draw detected vertical asymptotes as dashed lines (default false) */
     showAsymptotes?: boolean;
+    /** Live numeric scope (slider/parameter values) the expression references,
+     * refreshed each rebuild so curves re-sample as their driving sliders move. */
+    scope?: Record<string, number>;
 }
 
 /** A point in 2D or 3D space */
@@ -531,6 +534,10 @@ export interface SamplerParams {
     pixelWidth: number;
     /** Pixel height (used for pixel-space discontinuity detection) */
     pixelHeight?: number;
+    /** External values the expression may reference (e.g. a slider `α` in
+     * `If[-2 <= t <= α, ...]`). The function variable itself is set by the
+     * sampler; scope supplies the remaining symbols. */
+    scope?: Record<string, number>;
 }
 
 // ============================================================

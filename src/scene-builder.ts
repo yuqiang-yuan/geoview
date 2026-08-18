@@ -313,8 +313,30 @@ function buildFunctionRenderable(
         angleUnit: ggbKernel?.angleUnit === "degree" ? "degree" : "radian",
         xRange,
         yRange,
-        showAsymptotes
+        showAsymptotes,
+        scope: numericScope(kernel)
     };
+}
+
+/**
+ * Collect the current free-number values as a sampler scope, so a function
+ * expression may reference driving sliders/parameters (e.g. `α` in
+ * `If[-2 <= t <= α, ...]`). Refreshed each buildScene; undefined when there
+ * are no free numbers (preserves prior behaviour for scope-less fixtures).
+ */
+function numericScope(kernel?: KernelLike): Record<string, number> | undefined {
+    if (!kernel) return undefined;
+    const scope: Record<string, number> = {};
+    let any = false;
+    for (const obj of kernel.freeObjects()) {
+        if (obj.kind !== "number") continue;
+        const v = kernel.getValue(obj.label);
+        if (v?.kind === "number") {
+            scope[obj.label] = v.value;
+            any = true;
+        }
+    }
+    return any ? scope : undefined;
 }
 
 /**

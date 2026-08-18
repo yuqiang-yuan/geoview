@@ -780,7 +780,8 @@ function drawFunction(
         angleUnit: r.angleUnit,
         nSamples: DEFAULT_SAMPLES,
         pixelWidth: vp.width,
-        pixelHeight: vp.height
+        pixelHeight: vp.height,
+        scope: r.scope
     });
     const segments = result.segments;
 

@@ -96,6 +96,7 @@ export function ggbToMathJs(expr: string): string {
         .replace(/≤/g, "<=")
         .replace(/≥/g, ">=")
         .replace(/≠/g, "!=")
+        .replace(/≟/g, "==")
         .replace(/∧/g, " and ")
         .replace(/∨/g, " or ");
 
@@ -141,6 +142,19 @@ export function ggbToMathJs(expr: string): string {
 }
 
 /**
+ * Extract the independent-variable name from a GeoGebra function expression
+ * of the form `name(var) = body` (e.g. `f(t) = sin(t)` → `"t"`). GeoGebra lets
+ * the function variable be any identifier, not just `x`; without this the
+ * variable would be undefined at evaluation time and the whole curve would
+ * sample as NaN. Falls back to `"x"` when there is no `name(var) =` prefix
+ * (preserving the previous behaviour for bare expressions).
+ */
+function parseFunctionVar(expression: string): string {
+    const m = /^[A-Za-z_]\w*\s*\(\s*([A-Za-z_]\w*)\s*\)\s*=/.exec(expression);
+    return m ? m[1] : "x";
+}
+
+/**
  * Compile a GeoGebra expression into an evaluatable function.
  *
  * Note: GeoGebra's `angleUnit` setting affects angle-typed objects (e.g. 45°)
@@ -151,13 +165,18 @@ export function ggbToMathJs(expr: string): string {
  * @param expression  raw GGB expression (e.g. "f(x) = sin(x)")
  * @param angleUnit    "degree" or "radian" (unused for function expressions,
  *                     reserved for future angle-object support)
+ * @param scope  external values the expression may reference (e.g. a slider
+ *               `α` in `If[-2 <= t <= α, ...]`). The function variable is set
+ *               from the `name(var) =` prefix; scope supplies the rest.
  * @returns function that takes x and returns y, or NaN if undefined
  */
 export function compileExpression(
     expression: string,
-    angleUnit: "degree" | "radian" = "radian"
+    angleUnit: "degree" | "radian" = "radian",
+    scope?: Record<string, number>
 ): (x: number) => number {
     const rhs = ggbToMathJs(extractExpression(expression));
+    const varName = parseFunctionVar(expression);
     let compiled: EvalFunction;
 
     try {
@@ -169,7 +188,7 @@ export function compileExpression(
 
     return (x: number): number => {
         try {
-            const result = compiled.evaluate({ x });
+            const result = compiled.evaluate({ ...scope, [varName]: x });
             if (typeof result === "number") {
                 return result;
             }
@@ -839,6 +858,6 @@ export const builtinSampler: SamplerFn = (
     expression: string,
     params: SamplerParams
 ): SampleResult => {
-    const fn = compileExpression(expression, params.angleUnit);
+    const fn = compileExpression(expression, params.angleUnit, params.scope);
     return sampleFunction(fn, params);
 };
