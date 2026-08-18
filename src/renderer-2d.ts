@@ -23,6 +23,7 @@ import type {
     RenderableConic,
     RenderableFunction,
     RenderablePoint,
+    RenderablePointList,
     RenderableLine,
     RenderableSegment,
     RenderablePolygon,
@@ -690,6 +691,9 @@ function drawRenderable(
         case "point":
             drawPoint(ctx, r, vp, labelTasks);
             break;
+        case "pointlist":
+            drawPointList(ctx, r, vp);
+            break;
         case "line":
             drawLine(ctx, r, vp);
             break;
@@ -922,18 +926,15 @@ function drawConic(
     }
 }
 
-function drawPoint(
+/** Draw a point shape at pixel coords (no label). Shared by points and lists. */
+function drawPointShape(
     ctx: CanvasRenderingContext2D,
-    r: RenderablePoint,
-    vp: Viewport2D,
-    labelTasks: LabelTask[]
+    px: number,
+    py: number,
+    size: number,
+    style: number,
+    color: string
 ): void {
-    const px = pixelX(vp, r.x);
-    const py = pixelY(vp, r.y);
-    const size = r.pointSize ?? 5;
-    const style = r.pointStyle ?? 0;
-    const color = r.color ?? "#1565C0";
-
     ctx.fillStyle = color;
     ctx.strokeStyle = color;
 
@@ -982,6 +983,21 @@ function drawPoint(
             ctx.fill();
             break;
     }
+}
+
+function drawPoint(
+    ctx: CanvasRenderingContext2D,
+    r: RenderablePoint,
+    vp: Viewport2D,
+    labelTasks: LabelTask[]
+): void {
+    const px = pixelX(vp, r.x);
+    const py = pixelY(vp, r.y);
+    const size = r.pointSize ?? 5;
+    const style = r.pointStyle ?? 0;
+    const color = r.color ?? "#1565C0";
+
+    drawPointShape(ctx, px, py, size, style, color);
 
     // Draw label if visible
     if (r.showLabel && r.visible) {
@@ -996,6 +1012,20 @@ function drawPoint(
                 baseline: "bottom"
             }
         });
+    }
+}
+
+/** Draw a list of points (Sequence output). No per-point labels. */
+function drawPointList(
+    ctx: CanvasRenderingContext2D,
+    r: RenderablePointList,
+    vp: Viewport2D
+): void {
+    const size = r.pointSize ?? 5;
+    const style = r.pointStyle ?? 0;
+    const color = r.color ?? "#1565C0";
+    for (const p of r.points) {
+        drawPointShape(ctx, pixelX(vp, p.x), pixelY(vp, p.y), size, style, color);
     }
 }
 

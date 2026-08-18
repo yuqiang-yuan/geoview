@@ -30,9 +30,13 @@ export { Kernel } from "./kernel";
 // Rendering — 2D renderer
 export { createRenderer2D } from "./renderer-2d";
 
-// Interactive dragging (sliders + free points)
+// Interactive dragging (sliders + free points) + button scripts + animation
 export { createInteractive } from "./interactive";
-export type { Interactive, InteractiveOptions, HitTarget } from "./interactive";
+export type { Interactive, InteractiveOptions, HitTarget, ButtonInfo } from "./interactive";
+export { Animator } from "./animator";
+export type { AnimationConfig, AnimatorDeps } from "./animator";
+export { runGgbScript } from "./ggbscript";
+export type { ScriptContext } from "./ggbscript";
 
 // High-level convenience: parse + render in one call
 export { renderGgb } from "./api";

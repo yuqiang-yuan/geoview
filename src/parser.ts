@@ -563,6 +563,17 @@ function parseElementChild(el: XmlElement, element: GgbElement): void {
         case "listType":
             element.listType = getAttr(el, "val");
             break;
+        case "labelOffset": {
+            const x = getAttrNum(el, "x");
+            const y = getAttrNum(el, "y");
+            if (x !== undefined && y !== undefined) {
+                element.labelOffset = { x, y };
+            }
+            break;
+        }
+        case "ggbscript":
+            element.ggbscript = getAttr(el, "val");
+            break;
         default:
             // Unknown child tag — skip in Phase 1
             break;

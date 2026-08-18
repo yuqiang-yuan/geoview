@@ -97,6 +97,7 @@ export function ggbColorToThree(color?: GgbColor): { r: number; g: number; b: nu
 export type Renderable =
     | RenderableFunction
     | RenderablePoint
+    | RenderablePointList
     | RenderableLine
     | RenderableSegment
     | RenderablePolygon
@@ -150,6 +151,17 @@ export interface RenderablePoint extends RenderableBase {
     y: number;
     z?: number;
     /** Point size in pixels (2D) */
+    pointSize?: number;
+    /** Point style: 0=dot, 1=cross, 2=empty circle, ... */
+    pointStyle?: number;
+}
+
+/** A list of points (e.g. a Sequence-generated point collection). */
+export interface RenderablePointList extends RenderableBase {
+    kind: "pointlist";
+    /** Ordered point positions */
+    points: Array<{ x: number; y: number }>;
+    /** Point size in pixels */
     pointSize?: number;
     /** Point style: 0=dot, 1=cross, 2=empty circle, ... */
     pointStyle?: number;
@@ -317,11 +329,12 @@ export interface KernelLike {
     setValue(label: string, value: ResolvedValue): void;
 }
 
-/** A resolved kernel value: number, 2D point, or compiled function. */
+/** A resolved kernel value: number, 2D point, compiled function, or point list. */
 export type ResolvedValue =
     | { kind: "number"; value: number }
     | { kind: "point"; x: number; y: number }
-    | { kind: "function"; evaluate: (x: number) => number; expression: string };
+    | { kind: "function"; evaluate: (x: number) => number; expression: string }
+    | { kind: "list"; points: Array<{ x: number; y: number }> };
 
 export interface SceneBuildOptions {
     /** Force a render mode (auto-detected from document if omitted) */

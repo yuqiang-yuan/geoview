@@ -51,7 +51,13 @@ export interface FunctionValue {
     expression: string;
 }
 
-export type ResolvedValue = NumberValue | PointValue | FunctionValue;
+export interface ListValue {
+    kind: "list";
+    /** Ordered points (Sequence-of-points is the use case). */
+    points: Array<{ x: number; y: number }>;
+}
+
+export type ResolvedValue = NumberValue | PointValue | FunctionValue | ListValue;
 
 /** A free (draggable) object: a point or a slider. */
 export interface FreeObject {
@@ -68,7 +74,8 @@ type Recipe =
     | { kind: "free-number"; min: number; max: number; step?: number; initialValue: number }
     | { kind: "derived-point"; exp: string }
     | { kind: "function-expr"; rhs: string }
-    | { kind: "fitpoly"; pointLabels: string[]; degree: number };
+    | { kind: "fitpoly"; pointLabels: string[]; degree: number }
+    | { kind: "sequence"; expr: string; varName: string; startExpr: string; endExpr: string; stepExpr?: string };
 
 // ============================================================
 // Kernel
@@ -218,6 +225,17 @@ export class Kernel {
                     : Math.max(0, labels.length - 1);
                 return { kind: "fitpoly", pointLabels: labels, degree: Number.isFinite(degree) ? degree : labels.length - 1 };
             }
+            if (cmd.name === "Sequence") {
+                // input: [expr, var, start, end, step?]
+                return {
+                    kind: "sequence",
+                    expr: cmd.input[0] ?? "",
+                    varName: cmd.input[1] ?? "i",
+                    startExpr: cmd.input[2] ?? "1",
+                    endExpr: cmd.input[3] ?? "1",
+                    stepExpr: cmd.input[4]
+                };
+            }
             return undefined;
         }
 
@@ -290,6 +308,27 @@ export class Kernel {
                 const fit = fitPoly(pts, recipe.degree);
                 return { kind: "function", evaluate: fit.evaluate, expression: fit.expression };
             }
+            case "sequence": {
+                const scope = this.buildScope();
+                const start = evalNumber(recipe.startExpr, scope);
+                const end = evalNumber(recipe.endExpr, scope);
+                if (!Number.isFinite(start) || !Number.isFinite(end)) return undefined;
+                const step = recipe.stepExpr ? evalNumber(recipe.stepExpr, scope) : 1;
+                if (!step || !Number.isFinite(step) || step === 0) return undefined;
+                const points: Array<{ x: number; y: number }> = [];
+                const dir = step > 0 ? 1 : -1;
+                // Guard against runaway loops (e.g. huge end with tiny step).
+                const maxIter = 100000;
+                let v = start;
+                let iter = 0;
+                while (dir > 0 ? v <= end : v >= end) {
+                    if (iter++ > maxIter) break;
+                    const pt = evalPointExpr(recipe.expr, { ...scope, [recipe.varName]: v });
+                    if (pt) points.push({ x: pt.x, y: pt.y });
+                    v += step;
+                }
+                return { kind: "list", points };
+            }
         }
     }
 
@@ -330,6 +369,9 @@ export class Kernel {
                     break;
                 case "function":
                     scope[label] = value.evaluate;
+                    break;
+                case "list":
+                    // Lists are not referenced by other expressions.
                     break;
             }
         }
@@ -393,6 +435,16 @@ function extractNumber(r: unknown): number {
         if (typeof v === "number") return v;
     }
     return NaN;
+}
+
+/** Evaluate a GeoGebra numeric expression against a scope (e.g. Sequence bounds). */
+function evalNumber(exp: string, scope: Record<string, unknown>): number {
+    try {
+        const compiled = compile(ggbToMathJs(exp));
+        return extractNumber(compiled.evaluate(scope));
+    } catch {
+        return NaN;
+    }
 }
 
 /** Extract {x,y} from a mathjs evaluation result (DenseMatrix / array). */

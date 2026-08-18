@@ -12,10 +12,12 @@
  * pan/zoom, unlike the initial {@link Renderer2D.render}).
  */
 
-import type { GgbDocument, GgbConstructionItem } from "./types";
+import type { GgbDocument, GgbConstructionItem, GgbElement } from "./types";
 import type { SceneBuildOptions, Renderer2D } from "./render-types";
 import { buildScene } from "./scene-builder";
 import { Kernel } from "./kernel";
+import { Animator, type AnimationConfig } from "./animator";
+import { runGgbScript, type ScriptContext } from "./ggbscript";
 
 /** Immutable slider geometry, precomputed once from the document. */
 interface SliderGeom {
@@ -40,9 +42,20 @@ export interface HitTarget {
     label: string;
 }
 
+/** A button declared in the document (caption is live). */
+export interface ButtonInfo {
+    label: string;
+    /** Current caption (mutated by SetCaption scripts). */
+    caption: string;
+    /** Screen-pixel position from <labelOffset>. */
+    x: number;
+    y: number;
+}
+
 /** Pointer-to-object interaction driver. */
 export interface Interactive {
     readonly kernel: Kernel;
+    readonly animator: Animator;
     /** What (if anything) is under the pointer, for the down decision. */
     hitTest(clientX: number, clientY: number): HitTarget | null;
     /** Begin dragging a hit target (suppresses panning). */
@@ -53,6 +66,14 @@ export interface Interactive {
     endDrag(): void;
     /** Is a drag in progress? */
     isDragging(): boolean;
+    /** Buttons declared in the document (captions are live). */
+    getButtons(): ButtonInfo[];
+    /** Run a button's ggbscript; rebuilds the scene once after. */
+    clickButton(label: string): void;
+    /** Register for caption/state changes (host re-renders buttons). */
+    onUpdate(cb: () => void): void;
+    /** Stop animation + cancel rAF (call on unmount). */
+    dispose(): void;
 }
 
 const HIT_RADIUS_PX = 9;
@@ -77,11 +98,6 @@ export function createInteractive(
         kernel
     };
 
-    function rebuild(): void {
-        const scene = buildScene(doc, buildOpts);
-        renderer.updateScene(scene);
-    }
-
     // Establish the kernel-driven scene as current.
     renderer.render(buildScene(doc, buildOpts));
 
@@ -91,8 +107,89 @@ export function createInteractive(
     // keeps hit-testing off the scene-build hot path.
     const sliders = collectSliderGeometry(doc.construction.items);
 
+    // Numeric elements (for animation config lookup by label).
+    const numericByLabel = new Map<string, GgbElement>();
+    // Boolean labels (script-level flags like a play/pause toggle).
+    const booleanLabels = new Set<string>();
+    for (const item of doc.construction.items) {
+        if (item.kind !== "element") continue;
+        if (item.type === "numeric") numericByLabel.set(item.label, item);
+        if (item.type === "boolean") booleanLabels.add(item.label);
+    }
+
+    // Runtime boolean state (script-level, defaults to false — matches GeoGebra's
+    // default for a new boolean and the `a` toggle in limit.ggb).
+    const booleans = new Map<string, boolean>();
+    // Live button captions (initialized from parsed <caption>, mutated by SetCaption).
+    const captions = new Map<string, string>();
+    for (const item of doc.construction.items) {
+        if (item.kind === "element" && item.type === "button" && item.caption !== undefined) {
+            captions.set(item.label, item.caption);
+        }
+    }
+
+    // Animation config per free-number label: combines slider bounds with the
+    // element's <animation> settings.
+    function animationConfig(label: string): AnimationConfig | undefined {
+        const bounds = kernel.sliderBounds(label);
+        const el = numericByLabel.get(label);
+        const anim = el?.animation;
+        if (!bounds) return undefined;
+        const step = anim?.step ?? bounds.step ?? 1;
+        return {
+            min: bounds.min,
+            max: bounds.max,
+            step: step > 0 ? step : 1,
+            speed: anim?.speed ?? 1,
+            type: anim?.type ?? 3
+        };
+    }
+
     // Active drag state.
     let active: HitTarget | null = null;
+    let updateCb: (() => void) | undefined;
+
+    function rebuild(): void {
+        const scene = buildScene(doc, buildOpts);
+        renderer.updateScene(scene);
+    }
+
+    // ScriptContext: bridges the ggbscript interpreter to the kernel + animator.
+    const ctx: ScriptContext = {
+        getValue: (label) => kernel.getValue(label),
+        setValue: (label, value) => {
+            // A manual value change (e.g. the reset button's `n = 1`) halts any
+            // running animation on that label — GeoGebra stops animating a slider
+            // once its value is set by hand. The animator's own per-frame writes
+            // go straight through kernel.setValue, so they do not self-interrupt.
+            if (animator.isPlaying(label)) animator.stop(label);
+            kernel.setValue(label, value);
+        },
+        isFree: (label) => kernel.isFree(label),
+        getBoolean: (label) => booleans.get(label) ?? false,
+        setBoolean: (label, value) => booleans.set(label, value),
+        isBoolean: (label) => booleanLabels.has(label),
+        startAnimation: (label, play) => {
+            if (play) animator.start(label);
+            else animator.stop(label);
+        },
+        setCaption: (label, text) => {
+            captions.set(label, text);
+            updateCb?.();
+        }
+    };
+
+    // Owns the single rAF loop; each frame advances the animated slider and
+    // rebuilds the scene, reusing the same reactivity chain as dragTo.
+    const animator = new Animator({
+        getValue: (label) => {
+            const v = kernel.getValue(label);
+            return v?.kind === "number" ? v.value : undefined;
+        },
+        setValue: (label, value) => kernel.setValue(label, { kind: "number", value }),
+        config: animationConfig,
+        rebuild
+    });
 
     /** Convert client coords → canvas-local CSS pixels. */
     function toCanvas(clientX: number, clientY: number): { x: number; y: number } {
@@ -181,13 +278,50 @@ export function createInteractive(
         return active !== null;
     }
 
+    function getButtons(): ButtonInfo[] {
+        const out: ButtonInfo[] = [];
+        for (const item of doc.construction.items) {
+            if (item.kind !== "element" || item.type !== "button") continue;
+            out.push({
+                label: item.label,
+                caption: captions.get(item.label) ?? item.caption ?? "",
+                x: item.labelOffset?.x ?? 0,
+                y: item.labelOffset?.y ?? 0
+            });
+        }
+        return out;
+    }
+
+    function clickButton(label: string): void {
+        const item = doc.construction.items.find(
+            (it) => it.kind === "element" && it.type === "button" && it.label === label
+        );
+        if (item?.kind !== "element") return;
+        runGgbScript(item.ggbscript ?? "", ctx);
+        // Apply any value side-effects (e.g. `n = 1`) to the scene.
+        rebuild();
+    }
+
+    function onUpdate(cb: () => void): void {
+        updateCb = cb;
+    }
+
+    function dispose(): void {
+        animator.dispose();
+    }
+
     return {
         kernel,
+        animator,
         hitTest,
         beginDrag,
         dragTo,
         endDrag,
-        isDragging
+        isDragging,
+        getButtons,
+        clickButton,
+        onUpdate,
+        dispose
     };
 }
 

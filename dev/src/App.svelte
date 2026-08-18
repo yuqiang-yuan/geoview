@@ -1,7 +1,7 @@
 <script lang="ts">
-    import { onMount } from "svelte";
+    import { onMount, onDestroy } from "svelte";
     import { VERSION, parseGgb, renderGgb, createInteractive } from "geoview";
-    import type { Renderer, Interactive, HitTarget } from "geoview";
+    import type { Renderer, Interactive, HitTarget, ButtonInfo } from "geoview";
     import { createMathJaxLabelRenderer } from "./mathjax-labels";
 
     let canvas: HTMLCanvasElement;
@@ -10,14 +10,26 @@
     let fileName = "";
     let renderer: Renderer | null = null;
     let interactive: Interactive | null = null;
+    let buttons: ButtonInfo[] = [];
 
     // MathJax label renderer — converts labels to LaTeX → SVG → Image
     const labelRenderer = createMathJaxLabelRenderer();
+
+    function refreshButtons(): void {
+        if (!interactive) {
+            buttons = [];
+            return;
+        }
+        buttons = interactive.getButtons();
+    }
 
     function handleFile(e: Event) {
         const input = e.target as HTMLInputElement;
         const file = input.files?.[0];
         if (!file) return;
+
+        // Tear down the previous interactive session (cancel any rAF loop).
+        interactive?.dispose();
 
         fileName = file.name;
         status = `loading ${file.name}...`;
@@ -37,12 +49,19 @@
                     width: w,
                     height: h
                 });
+                interactive.onUpdate(refreshButtons);
+                refreshButtons();
                 status = `rendered ${fileName} — ${doc.construction.items.length} items`;
             } catch (err) {
                 status = `error: ${(err as Error).message}`;
                 console.error(err);
             }
         });
+    }
+
+    function onButtonClick(label: string): void {
+        interactive?.clickButton(label);
+        refreshButtons();
     }
 
     // Pan vs object drag: on pointer-down we hit-test free objects first.
@@ -116,6 +135,10 @@
             canvas.height / 2
         );
     });
+
+    onDestroy(() => {
+        interactive?.dispose();
+    });
 </script>
 
 <div class="controls">
@@ -144,6 +167,15 @@
         on:wheel|nonpassive={onWheel}
         on:dblclick={onDblClick}
     ></canvas>
+    <div class="button-layer">
+        {#each buttons as btn (btn.label)}
+            <button
+                class="ggb-button"
+                style="left:{btn.x}px; top:{btn.y}px;"
+                on:click={() => onButtonClick(btn.label)}
+            >{btn.caption}</button>
+        {/each}
+    </div>
 </div>
 
 <div class="hint">
@@ -197,6 +229,31 @@
         padding: 12px;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
         display: inline-block;
+        position: relative;
+    }
+    .button-layer {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+    }
+    .ggb-button {
+        position: absolute;
+        pointer-events: auto;
+        padding: 6px 14px;
+        border: 1px solid #888;
+        border-radius: 4px;
+        background: #f0f0f0;
+        color: #111;
+        font-size: 14px;
+        font-family: system-ui, sans-serif;
+        cursor: pointer;
+        white-space: nowrap;
+    }
+    .ggb-button:hover {
+        background: #e0e0e0;
     }
     .hint {
         margin-top: 8px;

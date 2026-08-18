@@ -238,6 +238,10 @@ export interface GgbElement {
     boundingBox?: { x: number; y: number; width: number; height: number };
     inBackground?: boolean;
     listType?: string;
+    /** GGB script for button elements (<ggbscript val="..."/>). */
+    ggbscript?: string;
+    /** Screen-pixel offset of an object's label/button (<labelOffset x y/>). */
+    labelOffset?: { x: number; y: number };
 }
 
 /** Object group */

@@ -14,6 +14,7 @@ import type {
     RenderableConic,
     RenderableFunction,
     RenderablePoint,
+    RenderablePointList,
     RenderableSegment,
     RenderableLine,
     RenderableSlider,
@@ -176,6 +177,11 @@ export function buildScene(
                     );
                     if (r) renderables.push(r);
                 }
+            } else if (item.type === "list") {
+                const r = buildPointListRenderable(item, kernel);
+                if (r) renderables.push(r);
+            } else if (item.type === "button" || item.type === "boolean") {
+                // Handled by the interactive button-overlay layer; not a renderable.
             }
         }
     }
@@ -342,6 +348,27 @@ function buildPointRenderable(
         y,
         pointSize: element?.pointSize,
         pointStyle: element?.pointStyle
+    };
+}
+
+/**
+ * Build a point-list renderable from a `<element type="list">`. When a kernel
+ * is present, its live list value (e.g. a Sequence output) drives the points;
+ * otherwise the list is empty (lists have no stored point coords).
+ */
+function buildPointListRenderable(
+    element: GgbElement,
+    kernel?: KernelLike
+): RenderablePointList | undefined {
+    const kv = kernel?.getValue(element.label);
+    const points = kv?.kind === "list" ? kv.points : [];
+    const base = buildBase(element.label, element, kernel);
+    return {
+        ...base,
+        kind: "pointlist",
+        points,
+        pointSize: element.pointSize,
+        pointStyle: element.pointStyle
     };
 }
 
