@@ -7,18 +7,30 @@
  * - Axis labels "x"/"y" → italic math variable
  * - Numbers → plain text (no LaTeX needed)
  * - Function labels like "f(x) = sin(x)" → rendered as math
- * - Other text → plain text fallback
+ * - Mixed text + math (e.g. "半径：\[r = \frac{...}\]=87.62") → split into text
+ *   and math segments, render each math segment, composite onto a canvas so
+ *   plain text and rendered formulae lay out on one line.
  *
  * MathJax is loaded lazily via a CDN script tag (only when the first
  * label needs rendering). Results are cached by text+style key.
  */
 import type { LabelRenderResult } from "geoview";
 
-// Cache: text+opts → Image, so we don't re-render the same label every frame
-const cache = new Map<string, HTMLImageElement>();
+// Cache: text+opts → Image/Canvas, so we don't re-render the same label every frame
+const cache = new Map<string, HTMLImageElement | HTMLCanvasElement>();
 
 // MathJax load promise
 let mjPromise: Promise<void> | null = null;
+
+// Reusable offscreen canvas for measuring text widths.
+let measureCtx: CanvasRenderingContext2D | null = null;
+function getMeasureCtx(): CanvasRenderingContext2D {
+    if (!measureCtx) {
+        const c = document.createElement("canvas");
+        measureCtx = c.getContext("2d")!;
+    }
+    return measureCtx;
+}
 
 /**
  * Load MathJax v3 from CDN via dynamic <script> tag.
@@ -93,11 +105,175 @@ function toLatex(text: string, opts?: { italic?: boolean }): string {
     return `\\(${text}\\)`;
 }
 
+type Segment =
+    | { type: "text"; content: string }
+    | { type: "math"; display: boolean; content: string };
+
+/**
+ * Split a string into alternating text and math segments on \[...\]
+ * (display) and \(...\) (inline) delimiters. A string with no delimiters
+ * yields a single text segment.
+ */
+function splitMathSegments(text: string): Segment[] {
+    const segments: Segment[] = [];
+    const re = /\\\[(.*?)\\\]|\\\((.*?)\\\)/gs;
+    let last = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text))) {
+        if (m.index > last) segments.push({ type: "text", content: text.slice(last, m.index) });
+        if (m[1] !== undefined) segments.push({ type: "math", display: true, content: m[1] });
+        else segments.push({ type: "math", display: false, content: m[2] });
+        last = re.lastIndex;
+    }
+    if (last < text.length) segments.push({ type: "text", content: text.slice(last) });
+    return segments.filter((s) => s.type === "math" || s.content.length > 0);
+}
+
+/**
+ * Render a single TeX string to an SVG Image via MathJax. The colour is
+ * baked into the SVG (MathJax emits fill="currentColor" which is black in a
+ * standalone image). Returns null when rendering fails.
+ */
+async function renderMath(
+    tex: string,
+    display: boolean,
+    fontSize: number,
+    color: string
+): Promise<HTMLImageElement | null> {
+    try {
+        await ensureMathJax();
+        const mj = (window as any).MathJax;
+        const svgWrapper = await mj.tex2svgPromise(tex, {
+            display,
+            em: fontSize,
+            ex: fontSize / 2
+        });
+        const svgEl = svgWrapper.querySelector("svg");
+        if (!svgEl) return null;
+
+        const svgStr = new XMLSerializer()
+            .serializeToString(svgEl)
+            .replace(/currentColor/g, color);
+        const dataUrl = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svgStr);
+
+        const img = new Image();
+        await new Promise<void>((resolve, reject) => {
+            img.onload = () => resolve();
+            img.onerror = () => reject(new Error("Image load failed"));
+            img.src = dataUrl;
+        });
+        return img;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Composite alternating text and math-image segments onto a single canvas so
+ * a mixed label like "半径：[formula]=87.62" renders as plain text with the
+ * formula typeset inline. Text is drawn at `fontSize`; each math image is
+ * scaled so its height matches the surrounding text (display math slightly
+ * taller). Returns null on failure so the caller can fall back to plain text.
+ */
+async function compositeMixed(
+    segments: Segment[],
+    fontSize: number,
+    color: string,
+    serif: boolean
+): Promise<HTMLCanvasElement | null> {
+    const fontFamily = serif ? "serif" : "sans-serif";
+
+    // Render math segments to images first.
+    type Laid =
+        | { type: "text"; content: string; width: number; height: number }
+        | { type: "image"; img: HTMLImageElement; width: number; height: number };
+    const laid: Laid[] = [];
+
+    const mctx = getMeasureCtx();
+    mctx.font = `${fontSize}px ${fontFamily}`;
+
+    let totalWidth = 0;
+    let maxHeight = fontSize;
+
+    for (const seg of segments) {
+        if (seg.type === "text") {
+            const width = mctx.measureText(seg.content).width;
+            laid.push({ type: "text", content: seg.content, width, height: fontSize });
+            totalWidth += width;
+        } else {
+            const img = await renderMath(seg.content, seg.display, fontSize, color);
+            if (!img || !img.width || !img.height) {
+                // Fall back to drawing the raw TeX as text.
+                const content = seg.content;
+                const width = mctx.measureText(content).width;
+                laid.push({ type: "text", content, width, height: fontSize });
+                totalWidth += width;
+            } else {
+                const targetH = seg.display ? fontSize * 1.5 : fontSize * 1.1;
+                const scale = targetH / img.height;
+                const width = img.width * scale;
+                laid.push({ type: "image", img, width, height: targetH });
+                totalWidth += width;
+            }
+        }
+        if (laid[laid.length - 1].height > maxHeight) {
+            maxHeight = laid[laid.length - 1].height;
+        }
+    }
+
+    if (totalWidth <= 0) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(totalWidth);
+    canvas.height = Math.ceil(maxHeight);
+    const cctx = canvas.getContext("2d");
+    if (!cctx) return null;
+    cctx.font = `${fontSize}px ${fontFamily}`;
+    cctx.fillStyle = color;
+    cctx.textBaseline = "alphabetic";
+
+    let x = 0;
+    // Text baseline sits near the bottom of the line; place it so the text
+    // baseline is at maxHeight - a small descent pad.
+    const baseline = maxHeight - (maxHeight - fontSize) / 2 - fontSize * 0.2;
+    for (const seg of laid) {
+        if (seg.type === "text") {
+            cctx.fillText(seg.content, x, baseline);
+        } else {
+            cctx.drawImage(seg.img, x, maxHeight - seg.height, seg.width, seg.height);
+        }
+        x += seg.width;
+    }
+    return canvas;
+}
+
 export function createMathJaxLabelRenderer() {
     return async function mathJaxLabelRenderer(
         text: string,
-        opts?: { fontSize?: number; color?: string; italic?: boolean }
+        opts?: { fontSize?: number; color?: string; italic?: boolean; serif?: boolean }
     ): Promise<LabelRenderResult> {
+        const fontSize = opts?.fontSize ?? 13;
+        const color = opts?.color ?? "#1c1c1f";
+        const serif = opts?.serif ?? false;
+        const cacheKey = `${text}|${fontSize}|${color}|${serif}`;
+        const cached = cache.get(cacheKey);
+        if (cached) {
+            return cached;
+        }
+
+        // Mixed text + math (contains \[...\] or \(...\) delimiters).
+        if (/\\[\[\]()]/.test(text)) {
+            const segments = splitMathSegments(text);
+            if (segments.length > 1 || (segments.length === 1 && segments[0].type === "math")) {
+                const canvas = await compositeMixed(segments, fontSize, color, serif);
+                if (canvas) {
+                    cache.set(cacheKey, canvas);
+                    return canvas;
+                }
+            }
+            // Single text segment that merely contained a stray backslash —
+            // fall through to the plain path below.
+        }
+
         const latex = toLatex(text, opts);
 
         // If no LaTeX needed, return plain string (fast path)
@@ -105,13 +281,11 @@ export function createMathJaxLabelRenderer() {
             return text;
         }
 
-        // Check cache
-        const fontSize = opts?.fontSize ?? 13;
-        const color = opts?.color ?? "#1c1c1f";
-        const cacheKey = `${latex}|${fontSize}|${color}`;
-        const cached = cache.get(cacheKey);
-        if (cached) {
-            return cached;
+        // Check cache (second key form for the wrapped variant)
+        const wrappedKey = `${latex}|${fontSize}|${color}`;
+        const wrappedCached = cache.get(wrappedKey);
+        if (wrappedCached) {
+            return wrappedCached;
         }
 
         try {
@@ -126,37 +300,21 @@ export function createMathJaxLabelRenderer() {
                 tex = tex.slice(2, -2);
             }
 
-            // Render LaTeX to SVG
-            // em/ex are PIXEL metrics of the surrounding font: em = font
-            // size, ex = x-height (MathJax assumes ex = 0.5 * em by default).
-            // The ex/em ratio drives script (superscript/subscript) scaling -
-            // wrong values make exponents render LARGER than the base.
-            //
-            // Note: tex2svgPromise has no "color" option (MathJax ignores it).
-            // The output glyphs use fill/stroke="currentColor", which resolves
-            // to black when the SVG is loaded as a standalone <img> (no CSS
-            // context). So we bake the colour in after serialisation below.
             const svgWrapper = await mj.tex2svgPromise(tex, {
                 display: false,
                 em: fontSize,
                 ex: fontSize / 2
             });
 
-            // Get the <svg> element
             const svgEl = svgWrapper.querySelector("svg");
             if (!svgEl) return text;
 
-            // Serialize SVG to data URL, baking in the text colour: MathJax
-            // emits fill="currentColor"/stroke="currentColor" on the root <g>,
-            // which has no value in a standalone image. Replacing it with the
-            // actual colour makes the glyphs carry the GGB text colour.
             const svgStr = new XMLSerializer()
                 .serializeToString(svgEl)
                 .replace(/currentColor/g, color);
             const dataUrl = "data:image/svg+xml;charset=utf-8," +
                 encodeURIComponent(svgStr);
 
-            // Create Image (wait for it to load)
             const img = new Image();
             await new Promise<void>((resolve, reject) => {
                 img.onload = () => resolve();
@@ -164,7 +322,7 @@ export function createMathJaxLabelRenderer() {
                 img.src = dataUrl;
             });
 
-            cache.set(cacheKey, img);
+            cache.set(wrappedKey, img);
             return img;
         } catch {
             // Fall back to plain text

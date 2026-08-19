@@ -541,6 +541,99 @@ function unquoteText(exp: string): string {
 }
 
 /**
+ * Split a GeoGebra text expression on top-level `+` operators, respecting
+ * string literals and parenthesised sub-expressions (so a `+` inside a
+ * quoted string or inside `(...)` is not treated as a concatenation split).
+ */
+function splitTextConcat(exp: string): string[] {
+    const parts: string[] = [];
+    let depth = 0;
+    let inString = false;
+    let start = 0;
+    for (let i = 0; i < exp.length; i++) {
+        const ch = exp[i];
+        if (inString) {
+            if (ch === "\\" && i + 1 < exp.length) { i++; continue; }
+            if (ch === "\"") inString = false;
+            continue;
+        }
+        if (ch === "\"") inString = true;
+        else if (ch === "(" || ch === "[" || ch === "{") depth++;
+        else if (ch === ")" || ch === "]" || ch === "}") depth--;
+        else if (ch === "+" && depth === 0) {
+            parts.push(exp.slice(start, i));
+            start = i + 1;
+        }
+    }
+    parts.push(exp.slice(start));
+    return parts.map((p) => p.trim()).filter((p) => p.length > 0);
+}
+
+/** Format a number for text display at GeoGebra's default 2 dp. */
+function formatTextNumber(n: number): string {
+    if (!Number.isFinite(n)) return "?";
+    if (Number.isInteger(n)) return String(n);
+    return parseFloat(n.toFixed(2)).toString();
+}
+
+/**
+ * Evaluate a GeoGebra text expression to a display string. GeoGebra text is
+ * string concatenation with `+`: quoted literals, `LaTeX[label]`/`(LaTeX[label])`
+ * (a label's LaTeX representation), `(expr)` (a parenthesised numeric
+ * expression), or a bare label reference. Each non-literal part is resolved
+ * against the kernel's current values; unresolvable parts are left as-is so
+ * the formula text still shows rather than vanishing.
+ *
+ * Quoted literals keep their inner LaTeX verbatim (e.g. `\[r = \frac{...}\]`),
+ * so an `isLaTeX` text renders as a proper formula with live values spliced
+ * in where `LaTeX[label]` appears.
+ */
+function evalTextExpression(exp: string, kernel?: KernelLike): string {
+    if (!kernel) return unquoteText(exp);
+    return splitTextConcat(exp)
+        .map((part) => evalTextPart(part, kernel))
+        .join("");
+}
+
+/** Evaluate a single concatenation part to a string. */
+function evalTextPart(part: string, kernel: KernelLike): string {
+    const p = part.trim();
+    // Quoted string literal → inner content verbatim.
+    if (p.startsWith("\"") && p.endsWith("\"")) {
+        return p.slice(1, -1);
+    }
+    // (LaTeX[label]) or LaTeX[label] → the label's formatted value.
+    const latex = p.replace(/^\(/, "").replace(/\)$/, "").trim();
+    const m = /^LaTeX\[(.+)\]$/i.exec(latex);
+    if (m) {
+        return resolveLabelText(m[1].trim(), kernel);
+    }
+    // (expr) or bare expr → evaluate as a number if possible.
+    const inner = p.replace(/^\(/, "").replace(/\)$/, "").trim();
+    const num = tryEvalNumber(inner, kernel);
+    return num !== undefined ? formatTextNumber(num) : p;
+}
+
+/** Format a label's value for display inside a LaTeX/text expression. */
+function resolveLabelText(label: string, kernel: KernelLike): string {
+    const v = kernel.getValue(label);
+    if (!v) return label;
+    if (v.kind === "number") return formatTextNumber(v.value);
+    if (v.kind === "point") return `(${formatTextNumber(v.x)}, ${formatTextNumber(v.y)})`;
+    if (v.kind === "function") return label;
+    return label;
+}
+
+/** Best-effort numeric evaluation of an expression against the kernel scope. */
+function tryEvalNumber(exp: string, kernel: KernelLike): number | undefined {
+    const v = kernel.getValue(exp);
+    if (v?.kind === "number") return v.value;
+    return undefined;
+}
+
+
+
+/**
  * Build a text renderable. Content is a (possibly quoted) GeoGebra text
  * string from an `<expression>` or a Text command's first input. Positioning:
  *  - `<absoluteScreenLocation x= y=/>` → screen pixel coords that do NOT
@@ -560,7 +653,10 @@ function buildTextRenderable(
     anchorExp?: string
 ): RenderableText | undefined {
     if (contentExp === undefined) return undefined;
-    const content = unquoteText(contentExp);
+    // Evaluate the text expression so label references (LaTeX[r], (LaTeX[A]))
+    // and concatenations resolve to live values; falls back to the raw
+    // unquoted string when there is nothing to interpolate.
+    const content = evalTextExpression(contentExp, kernel);
     if (!content) return undefined;
 
     const base = buildBase(label, element, kernel);

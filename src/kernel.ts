@@ -72,6 +72,7 @@ type Recipe =
     | { kind: "free-point"; exp: string; initialValue: PointValue }
     | { kind: "free-number"; min: number; max: number; step?: number; initialValue: number }
     | { kind: "derived-point"; exp: string }
+    | { kind: "derived-number"; exp: string }
     | { kind: "function-expr"; rhs: string }
     | { kind: "fitpoly"; pointLabels: string[]; degree: number }
     | { kind: "sequence"; expr: string; varName: string; startExpr: string; endExpr: string; stepExpr?: string };
@@ -240,6 +241,15 @@ export class Kernel {
         // Numeric / slider object.
         if (el?.type === "numeric") {
             const sl = el.slider;
+            // A numeric with a formula expression but no slider is a derived
+            // scalar (e.g. the curvature radius `r = (1 + (0.8·a)²)^1.5 / 0.8`):
+            // GeoGebra stores both the <expression> recipe and a <numeric>
+            // snapshot of the last computed value. The snapshot goes stale the
+            // moment a free input (`a`) changes, so evaluate the expression
+            // live and let it track its inputs.
+            if (!sl && expr?.exp && !expr.exp.trimStart().startsWith("\"")) {
+                return { kind: "derived-number", exp: expr.exp };
+            }
             const min = sl?.min ?? 0;
             const max = sl?.max ?? 1;
             const initial = el.value ?? min;
@@ -270,7 +280,11 @@ export class Kernel {
         }
 
         // Function defined directly by an expression f(x) = ...
-        if (el?.type === "function" || expr?.type === "function") {
+        // Also treat an explicit conic written as `y = ...` (e.g. the parabola
+        // `y = 0.4 * x^(2)`, stored as type="conic") as a function so that
+        // point expressions like M = (a, f(a)) can evaluate f at a value.
+        if (el?.type === "function" || expr?.type === "function"
+            || (el?.type === "conic" && el.eqnStyle === "explicit")) {
             if (expr?.exp && expr.exp.includes("=")) {
                 return { kind: "function-expr", rhs: extractExpression(expr.exp) };
             }
@@ -278,8 +292,20 @@ export class Kernel {
         }
 
         // Bare function-like expression without type (e.g. "h(x) = ...").
-        if (expr?.exp && !expr.type && expr.exp.includes("(") && expr.exp.includes("=")) {
+        // Skip string literals (text labels like `"圆心：A=(x ...)" + LaTeX[A]`)
+        // — they contain "(" and "=" and would otherwise be misclassified as
+        // functions, then fail to compile as mathjs and crash evaluation.
+        if (expr?.exp && !expr.type && expr.exp.includes("(") && expr.exp.includes("=")
+            && !expr.exp.trimStart().startsWith("\"")) {
             return { kind: "function-expr", rhs: extractExpression(expr.exp) };
+        }
+
+        // Derived scalar: a bare expression with no type that is neither a
+        // point tuple nor a function (e.g. the curvature radius
+        // `r = (1 + ((0.8 * a))^(2))^(1.5) / 0.8`, which references the slider
+        // `a`). Evaluate it against the live scope so it tracks its inputs.
+        if (expr?.exp && !expr.type && !expr.exp.trimStart().startsWith("\"")) {
+            return { kind: "derived-number", exp: expr.exp };
         }
 
         return undefined;
@@ -295,6 +321,12 @@ export class Kernel {
                 return { kind: "number", value: recipe.initialValue };
             case "derived-point":
                 return evalPointExpr(recipe.exp, this.buildScope());
+            case "derived-number": {
+                const v = evalNumber(recipe.exp, this.buildScope());
+                return Number.isFinite(v)
+                    ? { kind: "number", value: v }
+                    : undefined;
+            }
             case "function-expr":
                 return this.makeFunctionValue(recipe.rhs);
             case "fitpoly": {
@@ -335,18 +367,27 @@ export class Kernel {
      * (so a function referencing a slider/number re-reads it on each call).
      */
     private makeFunctionValue(rhs: string): FunctionValue {
-        const compiled = compileMath(ggbToMathJs(rhs));
-        const scope = this.buildScope();
-        return {
-            kind: "function",
-            evaluate: (x: number) => {
+        // Compile defensively: a misclassified expression (e.g. a text label
+        // that slipped past the heuristic) must not crash the whole kernel —
+        // it just yields a non-evaluatable function (NaN).
+        let compiled: (x: number) => number;
+        try {
+            const c = compileMath(ggbToMathJs(rhs));
+            const scope = this.buildScope();
+            compiled = (x: number) => {
                 try {
-                    const r = compiled.evaluate({ x, ...scope });
+                    const r = c.evaluate({ x, ...scope });
                     return typeof r === "number" ? r : extractNumber(r);
                 } catch {
                     return NaN;
                 }
-            },
+            };
+        } catch {
+            compiled = () => NaN;
+        }
+        return {
+            kind: "function",
+            evaluate: compiled,
             expression: rhs
         };
     }

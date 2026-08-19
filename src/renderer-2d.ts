@@ -348,8 +348,17 @@ function drawLabelFallback(
     };
     ctx.textAlign = alignMap[opts.align ?? "start"] ?? "left";
     ctx.textBaseline = opts.baseline ?? "alphabetic";
-    // Strip LaTeX inline delimiters for plain-text fallback rendering
-    const stripped = text.replace(/^\\\((.*)\\\)$/s, "$1");
+    // Strip LaTeX delimiters for plain-text fallback rendering: the outer
+    // \(...\) wrapper plus any inline \( \) / display \[ \] delimiters that
+    // mark math segments (their LaTeX body is drawn as raw text here — the
+    // MathJax renderer handles the real math). Without this the delimiters
+    // would show up literally when no LaTeX-aware renderer is configured.
+    const stripped = text
+        .replace(/^\\\((.*)\\\)$/s, "$1")
+        .replace(/\\\[/g, "")
+        .replace(/\\\]/g, "")
+        .replace(/\\\(/g, "")
+        .replace(/\\\)/g, "");
     ctx.fillText(stripped, x, y);
 }
 
@@ -1193,11 +1202,14 @@ function drawText(
     const py = r.absolute ? r.y : pixelY(vp, r.y);
     const fontSize = r.fontSize ?? 13;
 
-    // LaTeX content is passed through wrapped in \( \) so a LaTeX-aware
-    // label renderer (e.g. MathJax) picks it up verbatim; the playground's
-    // renderer forwards strings starting with \( unchanged, and the plain
-    // fallback strips the delimiters.
-    const text = r.isLatex && !r.content.trimStart().startsWith("\\(")
+    // LaTeX content is passed through so a LaTeX-aware label renderer
+    // (e.g. MathJax) picks it up verbatim. Content without any math delimiters
+    // is wrapped in \( \) so a renderer treats the whole string as one inline
+    // formula; content that already contains \[ \] / \( \) delimiters (mixed
+    // text + math, e.g. "半径：\[r = \frac{...}\]=87.62") is forwarded as-is
+    // so the renderer can split it into text and math segments itself.
+    const hasMathDelim = /\\[\[\]()]/.test(r.content);
+    const text = r.isLatex && !hasMathDelim && !r.content.trimStart().startsWith("\\(")
         ? `\\(${r.content}\\)`
         : r.content;
 
