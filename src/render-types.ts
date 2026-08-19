@@ -177,6 +177,12 @@ export interface RenderableLine extends RenderableBase {
     a: number;
     b: number;
     c: number;
+    /**
+     * Pre-rendered label text (e.g. an explicit `y = m·x + b` equation for a
+     * value-mode line). When present, used verbatim as the drawn label instead
+     * of the raw {@link RenderableBase.label} name string. May be LaTeX-wrapped.
+     */
+    labelText?: string;
 }
 
 /** Line segment between two points */

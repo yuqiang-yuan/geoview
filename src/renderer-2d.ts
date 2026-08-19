@@ -695,7 +695,7 @@ function drawRenderable(
             drawPointList(ctx, r, vp);
             break;
         case "line":
-            drawLine(ctx, r, vp);
+            drawLine(ctx, r, vp, labelTasks);
             break;
         case "segment":
             drawSegment(ctx, r, vp);
@@ -1033,11 +1033,14 @@ function drawPointList(
 function drawLine(
     ctx: CanvasRenderingContext2D,
     r: RenderableLine,
-    vp: Viewport2D
+    vp: Viewport2D,
+    labelTasks: LabelTask[]
 ): void {
     // ax + by + c = 0 → compute two points on the line at the canvas edges
     const xMin = dataX(vp, 0);
     const xMax = dataX(vp, vp.width);
+
+    let labelAnchor: { x: number; y: number } | undefined;
 
     ctx.strokeStyle = r.color ?? DEFAULT_AXIS;
     setLineStyle(ctx, r.lineStyle, r.strokeWidth ?? 2);
@@ -1049,14 +1052,70 @@ function drawLine(
         const y2 = -(r.a * xMax + r.c) / r.b;
         ctx.moveTo(pixelX(vp, xMin), pixelY(vp, y1));
         ctx.lineTo(pixelX(vp, xMax), pixelY(vp, y2));
+        // Anchor the label on the line well inside the canvas (≈10% from the
+        // left edge) so the caption draws to the LEFT of the anchor (right-
+        // aligned) and stays inside the viewport. Clamp y to the visible range
+        // so a steep line (whose endpoint flies off the top/bottom) still shows.
+        const visYTop = dataY(vp, 0);
+        const visYBottom = dataY(vp, vp.height);
+        const anchorX = xMin + (xMax - xMin) * 0.1;
+        const anchorY = -(r.a * anchorX + r.c) / r.b;
+        labelAnchor = {
+            x: anchorX,
+            y: Math.min(Math.max(anchorY, visYBottom), visYTop)
+        };
     } else {
         // Vertical line: x = -c/a
         const x = -r.c / r.a;
         ctx.moveTo(pixelX(vp, x), 0);
         ctx.lineTo(pixelX(vp, x), vp.height);
+        // Anchor at a readable spot on the line: the upper portion of the
+        // visible segment, not the math y=0 (which may be off-screen when
+        // panned) and definitely not the canvas top edge.
+        labelAnchor = { x, y: dataY(vp, vp.height * 0.18) };
     }
     ctx.stroke();
     ctx.setLineDash([]);
+
+    // Label: value-mode lines carry a pre-rendered equation (labelText);
+    // otherwise fall back to the name. Placed to the LEFT of the anchor
+    // (right-aligned). The label's right edge is clamped so the whole caption
+    // stays inside the canvas: estimate its pixel width (no reliable pre-
+    // measure for async MathJax labels) and push the right edge inboard, then
+    // re-derive the anchor y on the line at the clamped x so the caption still
+    // sits on the line rather than floating beside it.
+    if (r.showLabel && labelAnchor) {
+        const labelText = r.labelText ?? r.label;
+        const fontSize = 13;
+        // ~0.6em per char is a safe upper bound for mixed digits/operators.
+        const estWidth = labelText.length * fontSize * 0.6;
+        const margin = 8;
+        const rightEdge = pixelX(vp, labelAnchor.x) - 6;
+        const clampedRight = Math.min(
+            Math.max(rightEdge, estWidth + margin),
+            vp.width - margin
+        );
+        // y on the line at the clamped x (math coord), clamped to the view.
+        const visYTop = dataY(vp, 0);
+        const visYBottom = dataY(vp, vp.height);
+        const clampedMathX = dataX(vp, clampedRight + 6);
+        let labelY = labelAnchor.y;
+        if (Math.abs(r.b) > 1e-10) {
+            const onLine = -(r.a * clampedMathX + r.c) / r.b;
+            labelY = Math.min(Math.max(onLine, visYBottom), visYTop);
+        }
+        labelTasks.push({
+            text: labelText,
+            x: clampedRight,
+            y: pixelY(vp, labelY),
+            opts: {
+                fontSize,
+                color: r.color ?? DEFAULT_FUNC,
+                align: "end",
+                baseline: "middle"
+            }
+        });
+    }
 }
 
 function drawSegment(

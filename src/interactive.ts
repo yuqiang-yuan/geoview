@@ -353,7 +353,12 @@ function collectSliderGeometry(items: GgbConstructionItem[]): SliderGeom[] {
             horizontal: sl.horizontal ?? true,
             min: sl.min ?? 0,
             max: sl.max ?? 1,
-            step: sl.step
+            // GeoGebra sliders may omit an explicit increment on <slider>;
+            // in that case the <animation step="..."> is the only declared
+            // granularity, so fall back to it — otherwise dragging would be
+            // unquantized while the animator steps at 0.1 (e.g. the tangent
+            // demo's slider a, which has no <slider step> but animates by 0.1).
+            step: sl.step ?? item.animation?.step
         });
     }
     return out;

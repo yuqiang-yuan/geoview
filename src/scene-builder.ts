@@ -438,6 +438,45 @@ function buildSegmentRenderable(
  * Build a line renderable from an element.
  * Lines use homogeneous coords (a, b, c) for ax + by + c = 0.
  */
+/**
+ * Format a line's equation `a·x + b·y + c = 0` as a display label, matching
+ * GeoGebra's value-mode (labelMode 2) rendering. Returns a LaTeX string
+ * (`\( y = ... \)` / `\( x = ... \)`) so a MathJax-aware label renderer draws
+ * it as a formula; the plain-text fallback strips the delimiters.
+ *
+ * In value mode the graphics view always shows the explicit form (`y = m·x + b`
+ * for a non-vertical line, `x = const` for a vertical one) regardless of
+ * eqnStyle — eqnStyle only affects the algebra view's representation, so we
+ * ignore it here.
+ */
+function lineEquationLabel(
+    a: number,
+    b: number,
+    c: number
+): string | undefined {
+    // Vertical line: b == 0 → x = -c/a.
+    if (Math.abs(b) < 1e-12) {
+        const x = Math.abs(a) < 1e-12 ? 0 : -c / a;
+        return `\\(x = ${fmtNum(x)}\\)`;
+    }
+    // y = -(a·x + c) / b = m·x + k
+    const m = -a / b;
+    const k = -c / b;
+    // Build "y = m x + k" with a proper sign so we never print "y = m x + -3".
+    const mPart = fmtNum(m);
+    const sign = k < 0 ? " - " : " + ";
+    const kPart = fmtNum(Math.abs(k));
+    return `\\(y = ${mPart}\\,x${sign}${kPart}\\)`;
+}
+
+/** Format a coefficient for display: 2 dp, matching GeoGebra's default
+ *  `decimals` setting (e.g. 0.186 → "0.19", 0.8926 → "0.89"). Zero is shown
+ *  without decimals for a clean `x = 0` / `... + 0`. */
+function fmtNum(n: number): string {
+    if (n === 0) return "0";
+    return n.toFixed(2);
+}
+
 function buildLineRenderable(
     element: GgbElement,
     kernel?: KernelLike
@@ -452,7 +491,17 @@ function buildLineRenderable(
         kind: "line",
         a: c.x,
         b: c.y,
-        c: c.z
+        c: c.z,
+        // GeoGebra labelMode 2 = "Value": show the line's equation rather than
+        // its name. In value mode the graphics view always shows the explicit
+        // form (`y = m·x + b`, or `x = const` for a vertical line) regardless
+        // of eqnStyle (which only affects the algebra view). Wrapped as LaTeX
+        // so a MathJax-aware label renderer formats it as a formula; the
+        // plain-text fallback strips the delimiters.
+        labelText:
+            (base.showLabel && element.labelMode === 2)
+                ? lineEquationLabel(c.x, c.y, c.z)
+                : undefined
     };
 }
 

@@ -23,9 +23,8 @@
  * (`F - (0.1, 0.2)`) and function calls inside tuples (`f(1 + δ)`) work.
  */
 
-import { compile, type EvalFunction } from "mathjs";
 import type { GgbDocument, GgbConstructionItem, GgbElement, GgbExpression } from "./types";
-import { extractExpression, ggbToMathJs } from "./sampler";
+import { extractExpression, ggbToMathJs, compileMath, GGB_POW_SCOPE } from "./sampler";
 import { fitPoly } from "./fitpoly";
 
 // ============================================================
@@ -167,9 +166,8 @@ export class Kernel {
     /** Evaluate a `<condition showObject="..."/>` expression to a boolean. */
     evalCondition(cond: string | undefined): boolean {
         if (!cond) return true;
-        const expr = ggbToMathJs(cond);
         try {
-            const compiled = compile(expr);
+            const compiled = compileMath(ggbToMathJs(cond));
             const r = compiled.evaluate(this.buildScope());
             return Boolean(r);
         } catch {
@@ -337,7 +335,7 @@ export class Kernel {
      * (so a function referencing a slider/number re-reads it on each call).
      */
     private makeFunctionValue(rhs: string): FunctionValue {
-        const compiled = compile(ggbToMathJs(rhs));
+        const compiled = compileMath(ggbToMathJs(rhs));
         const scope = this.buildScope();
         return {
             kind: "function",
@@ -375,7 +373,10 @@ export class Kernel {
                     break;
             }
         }
-        return scope;
+        // Provide the real-branch power helper so expressions compiled with
+        // compileMath (e.g. `a^(1/3)`) resolve `^` to it — otherwise a point
+        // like `A = (a, f(a))` evaluates complex for a < 0 and vanishes.
+        return { ...scope, ...GGB_POW_SCOPE };
     }
 }
 
@@ -440,7 +441,7 @@ function extractNumber(r: unknown): number {
 /** Evaluate a GeoGebra numeric expression against a scope (e.g. Sequence bounds). */
 function evalNumber(exp: string, scope: Record<string, unknown>): number {
     try {
-        const compiled = compile(ggbToMathJs(exp));
+        const compiled = compileMath(ggbToMathJs(exp));
         return extractNumber(compiled.evaluate(scope));
     } catch {
         return NaN;
@@ -470,7 +471,7 @@ function extractPoint(r: unknown): PointValue | undefined {
  */
 function evalPointExpr(exp: string, scope: Record<string, unknown>): PointValue | undefined {
     try {
-        const compiled = compile(convertTuplesToArrays(ggbToMathJs(exp)));
+        const compiled = compileMath(convertTuplesToArrays(ggbToMathJs(exp)));
         return extractPoint(compiled.evaluate(scope));
     } catch {
         return undefined;
@@ -480,8 +481,8 @@ function evalPointExpr(exp: string, scope: Record<string, unknown>): PointValue 
 /** Try to evaluate a point expression with an empty scope (free-point test). */
 function evalPointConst(exp: string): PointValue | undefined {
     try {
-        const compiled = compile(convertTuplesToArrays(ggbToMathJs(exp)));
-        return extractPoint(compiled.evaluate({}));
+        const compiled = compileMath(convertTuplesToArrays(ggbToMathJs(exp)));
+        return extractPoint(compiled.evaluate({ ...GGB_POW_SCOPE }));
     } catch {
         return undefined;
     }

@@ -13,7 +13,12 @@
  * by default, so we wrap degree-mode evaluation with appropriate conversion.
  */
 
-import { compile as mathCompile, type EvalFunction } from "mathjs";
+import {
+    parse as mathParse,
+    FunctionNode,
+    type EvalFunction,
+    type MathNode
+} from "mathjs";
 import type { PolylineSegment, SampleResult, SamplerFn, SamplerParams } from "./render-types";
 
 /**
@@ -142,6 +147,87 @@ export function ggbToMathJs(expr: string): string {
 }
 
 /**
+ * Real-branch power for GeoGebra semantics.
+ *
+ * mathjs evaluates `a ^ b` for a negative base and a non-integer exponent
+ * via the complex principal branch — e.g. `(-8) ^ (1/3)` yields
+ * `1 + 1.73i` rather than the real cube root `-2`. GeoGebra takes the real
+ * branch: when `b` is a rational `p/q` (in lowest terms) with odd
+ * denominator `q`, the result is the real `(-1)^p * |a|^(p/q)`; an even
+ * denominator (a square/cube root of a negative) is genuinely undefined.
+ *
+ * Without this, a cube-root curve `y = x^(1/3)` samples as NaN for `x < 0`
+ * and the whole third quadrant goes unrendered. We rewrite the `^`
+ * operator into this helper so the real branch is used where it exists,
+ * and irrational/even-denominator exponents still fall back to NaN.
+ *
+ * `q` is found numerically by scanning odd denominators; the `(-1)^p` sign
+ * is correct for any representation of a reduced odd-denominator fraction,
+ * so the small search bound covers realistic hand-written exponents.
+ */
+function ggbPow(base: number, exp: number): number {
+    if (typeof base !== "number" || typeof exp !== "number") {
+        return Math.pow(base as number, exp as number);
+    }
+    if (base >= 0 || Number.isInteger(exp)) {
+        return Math.pow(base, exp);
+    }
+    // base < 0, exp non-integer: real branch only for rational p/q, q odd.
+    const absBase = Math.abs(base);
+    for (let q = 1; q <= 1001; q += 2) {
+        const pFloat = exp * q;
+        const p = Math.round(pFloat);
+        if (p !== 0 && Math.abs(pFloat - p) < 1e-9) {
+            return Math.pow(-1, p) * Math.pow(absBase, exp);
+        }
+    }
+    // Irrational or even-denominator exponent on a negative base:
+    // undefined over the reals, matching GeoGebra.
+    return NaN;
+}
+
+/** Identifier used as the rewritten power function name in the scope. */
+const GGB_POW_FN = "__ggbPow";
+
+/**
+ * Rewrite every `^` operator node into a call to {@link ggbPow} (named
+ * {@link GGB_POW_FN}) so negative bases evaluate via the real branch.
+ */
+function rewritePowerToRealBranch(node: MathNode): MathNode {
+    return node.transform((n) => {
+        if (n.type === "OperatorNode" && (n as unknown as { op: string }).op === "^") {
+            const fn = n as unknown as {
+                args: MathNode[];
+                fn: string;
+            };
+            return new FunctionNode(GGB_POW_FN, fn.args) as MathNode;
+        }
+        return n;
+    });
+}
+
+/**
+ * Scope entry that makes the rewritten `^` resolve to {@link ggbPow}. Merge
+ * this into any scope passed to an expression compiled by {@link compileMath}.
+ */
+export const GGB_POW_SCOPE: Record<string, (base: number, exp: number) => number> = {
+    [GGB_POW_FN]: ggbPow
+};
+
+/**
+ * Compile a mathjs expression string (already translated from GeoGebra via
+ * {@link ggbToMathJs}) with the real-branch power rewrite applied. Shared by
+ * the sampler (curve rendering) and the kernel (point/value evaluation) so
+ * both agree on `(-8)^(1/3) = -2` — otherwise the rendered curve and the
+ * computed point `A = (a, f(a))` would diverge for `a < 0` (curve real,
+ * point complex→NaN). Callers must merge {@link GGB_POW_SCOPE} into the
+ * evaluation scope.
+ */
+export function compileMath(mathjsExpr: string): EvalFunction {
+    return rewritePowerToRealBranch(mathParse(mathjsExpr)).compile();
+}
+
+/**
  * Extract the independent-variable name from a GeoGebra function expression
  * of the form `name(var) = body` (e.g. `f(t) = sin(t)` → `"t"`). GeoGebra lets
  * the function variable be any identifier, not just `x`; without this the
@@ -180,7 +266,10 @@ export function compileExpression(
     let compiled: EvalFunction;
 
     try {
-        compiled = mathCompile(rhs);
+        // Rewrite `^` into the real-branch power helper so curves like
+        // `y = x^(1/3)` evaluate to real values for x < 0 instead of the
+        // complex principal branch (which samples as NaN and is dropped).
+        compiled = compileMath(rhs);
     } catch {
         // If compilation fails, return a function that always yields NaN
         return () => NaN;
@@ -188,7 +277,11 @@ export function compileExpression(
 
     return (x: number): number => {
         try {
-            const result = compiled.evaluate({ ...scope, [varName]: x });
+            const result = compiled.evaluate({
+                ...scope,
+                [varName]: x,
+                ...GGB_POW_SCOPE
+            });
             if (typeof result === "number") {
                 return result;
             }
