@@ -35,7 +35,7 @@ export function extractExpression(exp: string): string {
  * Split "If[a, b, c, d, ...]" argument text on top-level commas,
  * respecting bracket nesting and string literals.
  */
-function splitTopLevel(s: string): string[] {
+export function splitTopLevel(s: string): string[] {
     const parts: string[] = [];
     let depth = 0;
     let inString = false;
@@ -223,8 +223,30 @@ export const GGB_POW_SCOPE: Record<string, (base: number, exp: number) => number
  * point complex→NaN). Callers must merge {@link GGB_POW_SCOPE} into the
  * evaluation scope.
  */
+
+/**
+ * Compiled-expression cache keyed by the (already-translated) mathjs text.
+ *
+ * The recursive evaluator {@link evalGgbNum} reduces higher-order constructs to
+ * numbers and leaves a plain-arithmetic residue (e.g.
+ * `(0.6366) * cos((1 * x)) + (1.0) * sin((1 * x))`) that it then compiles. That
+ * residue is identical across every sample point of one rebuild (only the
+ * variable `x` differs at evaluate time, and `x` stays symbolic in the text),
+ * so without this cache each rendered point re-parses and re-compiles the same
+ * expression — O(k) compiles per point for a Fourier sum, ~1.5s/frame at k=30
+ * and visible drag stutter. Caching makes it O(k) compiles per *rebuild* total.
+ * Bounded; cleared wholesale when it would grow past {@link COMPILE_CACHE_MAX}.
+ */
+const COMPILE_CACHE_MAX = 8192;
+const compileCache = new Map<string, EvalFunction>();
+
 export function compileMath(mathjsExpr: string): EvalFunction {
-    return rewritePowerToRealBranch(mathParse(mathjsExpr)).compile();
+    const cached = compileCache.get(mathjsExpr);
+    if (cached) return cached;
+    if (compileCache.size >= COMPILE_CACHE_MAX) compileCache.clear();
+    const compiled = rewritePowerToRealBranch(mathParse(mathjsExpr)).compile();
+    compileCache.set(mathjsExpr, compiled);
+    return compiled;
 }
 
 /**
@@ -981,6 +1003,501 @@ function evalGgbNumber(expr: string, scope: Record<string, unknown>): number {
     } catch {
         return NaN;
     }
+}
+
+// ============================================================
+// Higher-order GeoGebra commands: Integral, Sum, Sequence, Element
+//
+// mathjs cannot evaluate these because (a) they are unknown functions
+// and (b) its eager argument evaluation defeats `Integral[g(x), a, b]`
+// (the integrand must be re-evaluated per quadrature node with the
+// integration variable bound) and `Sum[Sequence[g, v, 1, k]]` (the end
+// `k` is a runtime value, so the sum can't be textually unrolled at
+// compile time). We handle them structurally here, recursing with the
+// correct variable binding, and fall back to mathjs for the plain
+// arithmetic residue (`a_0 / 2`, `cos(n * x)`, `f(x)`, ...).
+// ============================================================
+
+/** GeoGebra command names handled structurally (exact case, `[` arg syntax). */
+const GGB_COMMANDS = ["Integral", "Element", "Sum", "Sequence"] as const;
+
+/** Find the index of the matching `]` for the `[` at `openIdx`. -1 if unbalanced. */
+function matchBracket(s: string, openIdx: number): number {
+    let depth = 0;
+    for (let i = openIdx; i < s.length; i++) {
+        const c = s[i];
+        if (c === "(" || c === "[" || c === "{") depth++;
+        else if (c === ")" || c === "]" || c === "}") {
+            depth--;
+            if (depth === 0) return i;
+        }
+    }
+    return -1;
+}
+
+interface ConstructCall {
+    name: string;
+    /** Index of the name's first char. */
+    start: number;
+    /** Index just past the closing `]`. */
+    end: number;
+    /** Bracketed body (between `[` and `]`). */
+    body: string;
+}
+
+/**
+ * If `s` (trimmed) is exactly one GeoGebra command call `Name[...]`,
+ * return it; otherwise undefined.
+ */
+function matchWholeConstruct(s: string): ConstructCall | undefined {
+    const t = s.trim();
+    for (const name of GGB_COMMANDS) {
+        if (t.startsWith(name) && t[name.length] === "[") {
+            const close = matchBracket(t, name.length);
+            if (close === t.length - 1 && close > name.length) {
+                return { name, start: 0, end: t.length, body: t.slice(name.length + 1, close) };
+            }
+        }
+    }
+    return undefined;
+}
+
+/** Word-boundary test for a construct name match at position `i`. */
+function isConstructAt(s: string, name: string, i: number): boolean {
+    if (s.slice(i, i + name.length) !== name) return false;
+    if (s[i + name.length] !== "[") return false;
+    const prev = i > 0 ? s[i - 1] : " ";
+    // Must not be a continuation of a longer identifier (e.g. `mySum[`).
+    return !/[A-Za-z0-9_]/.test(prev);
+}
+
+/** Count only the named constructs in `s`. */
+function countConstructsIn(s: string, names: readonly string[]): number {
+    let n = 0;
+    for (let i = 0; i < s.length; i++) {
+        for (const name of names) {
+            if (isConstructAt(s, name, i)) { n++; i += name.length; break; }
+        }
+    }
+    return n;
+}
+
+/**
+ * Composite Simpson's rule over `[a, b]` (N even). Doubles N until the
+ * estimate converges relative to `1e-4` (cap 4096), so oscillatory
+ * integrands like `f(x)·cos(n·x)` for large `n` stay accurate without a
+ * fixed huge node count.
+ */
+function simpsonAdaptive(
+    g: (x: number) => number,
+    a: number,
+    b: number
+): number {
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return NaN;
+    let prev = NaN;
+    let N = 128;
+    for (let pass = 0; pass < 6; pass++) {
+        if (N > 4096) N = 4096;
+        let sum = g(a) + g(b);
+        const h = (b - a) / N;
+        for (let i = 1; i < N; i++) {
+            const x = a + i * h;
+            sum += (i % 2 === 0 ? 2 : 4) * g(x);
+        }
+        const est = (h / 3) * sum;
+        if (Number.isFinite(prev) && Math.abs(est - prev) <= 1e-4 * (1 + Math.abs(est))) {
+            return est;
+        }
+        prev = est;
+        N *= 2;
+    }
+    return prev;
+}
+
+/**
+ * Evaluate a GeoGebra expression to a number, handling the higher-order
+ * commands `Integral`/`Element`/`Sum`/`Sequence` structurally and falling
+ * back to mathjs for plain arithmetic.
+ */
+export function evalGgbNum(expr: string, scope: Record<string, unknown>): number {
+    const s = ggbToMathJs(expr);
+
+    // Whole expr is a single construct call → dispatch directly.
+    const whole = matchWholeConstruct(s);
+    if (whole) {
+        const args = splitTopLevel(whole.body);
+        switch (whole.name) {
+            case "Integral": {
+                // Integral[g, a, b]  or  Integral[g, var, a, b]
+                let gIdx = 0, varName = "x", aIdx = 1, bIdx = 2;
+                if (args.length === 4) { varName = args[1].trim(); aIdx = 2; bIdx = 3; }
+                const g = args[gIdx];
+                const a = evalGgbNum(args[aIdx], scope);
+                const b = evalGgbNum(args[bIdx], scope);
+                return simpsonAdaptive(
+                    (x) => evalGgbNum(g, { ...scope, [varName]: x }),
+                    a, b
+                );
+            }
+            case "Element": {
+                const li = evalGgbList(args[0], scope);
+                const idx = evalGgbNum(args[1], scope);
+                const i = Math.round(idx) - 1;
+                return Number.isInteger(i) && i >= 0 && i < li.length ? li[i] : NaN;
+            }
+            case "Sum": {
+                const li = evalGgbList(args[0], scope);
+                return li.reduce((acc, v) => acc + (Number.isFinite(v) ? v : 0), 0);
+            }
+            case "Sequence":
+                // A bare Sequence is not a number; it is consumed by Sum/Element.
+                return NaN;
+        }
+    }
+
+    // Embedded in arithmetic, or pure: reduce innermost number-producing
+    // constructs to literals, then evaluate the residue with mathjs.
+    let cur = s;
+    for (let guard = 0; guard < 1000; guard++) {
+        const c = findInnermostNumeric(cur);
+        if (!c) break;
+        const val = evalGgbNum(cur.slice(c.start, c.end), scope);
+        cur = cur.slice(0, c.start) + `(${val})` + cur.slice(c.end);
+    }
+    try {
+        const compiled = compileMath(cur);
+        return extractNumber(compiled.evaluate({ ...scope, ...GGB_POW_SCOPE }));
+    } catch {
+        return NaN;
+    }
+}
+
+/**
+ * Find the innermost construct among {Integral, Element, Sum} whose body
+ * contains no {Integral, Element, Sum} construct (a `Sequence` body is
+ * allowed — it is consumed by `Sum`/`Element` via `evalGgbList`).
+ */
+function findInnermostNumeric(s: string): ConstructCall | undefined {
+    const numericNames = ["Integral", "Element", "Sum"];
+    let best: ConstructCall | undefined;
+    let bestInner = Infinity;
+    for (let i = 0; i < s.length; i++) {
+        for (const name of numericNames) {
+            if (!isConstructAt(s, name, i)) continue;
+            const close = matchBracket(s, i + name.length);
+            if (close === -1) continue;
+            const body = s.slice(i + name.length + 1, close);
+            const inner = countConstructsIn(body, numericNames);
+            if (inner < bestInner) {
+                bestInner = inner;
+                best = { name, start: i, end: close + 1, body };
+            }
+            i = close;
+            break;
+        }
+    }
+    return bestInner === Infinity ? undefined : best;
+}
+
+/**
+ * Evaluate a GeoGebra expression to a list of numbers: a `Sequence`
+ * producing scalars, or a bare list label (e.g. `a_n`) resolved from scope.
+ */
+export function evalGgbList(expr: string, scope: Record<string, unknown>): number[] {
+    const s = ggbToMathJs(expr).trim();
+    const whole = matchWholeConstruct(s);
+    if (whole && whole.name === "Sequence") {
+        const args = splitTopLevel(whole.body);
+        // Sequence[g, var, start, end, step?]
+        const g = args[0];
+        const v = (args[1] ?? "i").trim();
+        const start = evalGgbNum(args[2] ?? "1", scope);
+        const end = evalGgbNum(args[3] ?? "1", scope);
+        const step = args[4] ? evalGgbNum(args[4], scope) : 1;
+        if (!Number.isFinite(start) || !Number.isFinite(end) || !step || !Number.isFinite(step)) {
+            return [];
+        }
+        const out: number[] = [];
+        const dir = step > 0 ? 1 : -1;
+        let val = start;
+        let iter = 0;
+        while (dir > 0 ? val <= end + 1e-9 : val >= end - 1e-9) {
+            if (iter++ > 100000) break;
+            out.push(evalGgbNum(g, { ...scope, [v]: val }));
+            val += step;
+        }
+        return out;
+    }
+    // Bare list label in scope (e.g. a_n, b_n).
+    const direct = scope[s];
+    if (Array.isArray(direct)) return direct.map((v) => Number(v));
+    // Fallback: try mathjs (array literal / matrix).
+    try {
+        const r = compileMath(s).evaluate({ ...scope, ...GGB_POW_SCOPE });
+        if (Array.isArray(r)) return r.map((v) => Number(v));
+        if (r && typeof (r as { toArray?: () => unknown[] }).toArray === "function") {
+            return (r as { toArray: () => unknown[] }).toArray().map((v) => Number(v));
+        }
+    } catch {
+        // fall through
+    }
+    return [];
+}
+
+// ============================================================
+// Closure compiler — one parse per rebuild, evaluate-per-point
+//
+// {@link evalGgbNum} re-parses the expression on every sample point (it
+// reduces constructs to literals then recompiles the residue). For a slider-
+// driven Fourier sum that is ~k string recompiles per rendered point —
+// hundreds of ms per frame and visible drag stutter, even with the compile
+// cache (the residue text is constant, but the string scanning, top-level
+// splitting and scope spreading still happen per point).
+//
+// `compileToClosure` instead turns the expression into a single JS closure
+// once per rebuild. Rebuild-time-fixed quantities — free numbers, scalar
+// lists, `Integral` coefficients, `Sequence` extents — are resolved into the
+// closure; only the function variable stays symbolic. A rendered point then
+// costs just a tight multiply-add loop over the precomputed terms, no mathjs
+// parsing or string work. Falls back to {@link evalGgbNum} when the structure
+// is not understood (correctness is never sacrificed for speed).
+// ============================================================
+
+/** Resolve a bare identifier against scope, or undefined if absent/unknown. */
+function lookupScalar(label: string, scope: Record<string, unknown>): unknown {
+    const t = label.trim();
+    const v = scope[t];
+    if (typeof v === "number") return v;
+    if (typeof v === "function") return v; // a referenced function value
+    if (Array.isArray(v)) return v; // a scalar list
+    return undefined;
+}
+
+/**
+ * Compile `expr` into a fast `(x) => number`, resolving everything that is
+ * fixed across sample points at build time against `scope`. `varName` is the
+ * only symbol kept symbolic (the function variable). Returns `undefined`
+ * when the structure is not understood — callers fall back to evalGgbNum.
+ */
+export function compileToClosure(
+    expr: string,
+    scope: Record<string, unknown>,
+    varName = "x"
+): ((x: number) => number) | undefined {
+    const s = ggbToMathJs(expr).trim();
+
+    // A bare reference to a known function value → delegate to it.
+    const direct = lookupScalar(s, scope);
+    if (typeof direct === "function") return (x) => (direct as (x: number) => number)(x);
+
+    // Whole expr is a single construct call.
+    const whole = matchWholeConstruct(s);
+    if (whole) {
+        const args = splitTopLevel(whole.body);
+        switch (whole.name) {
+            case "Sum": {
+                // Sum[Sequence[term, v, s, e]] or Sum[listLabel].
+                const terms = compileListTerms(args[0], scope, varName);
+                if (!terms) return undefined;
+                return (x) => {
+                    let acc = 0;
+                    for (const t of terms) {
+                        const v = t(x);
+                        if (Number.isFinite(v)) acc += v;
+                    }
+                    return acc;
+                };
+            }
+            case "Sequence":
+                // A bare Sequence is not a scalar; only meaningful inside Sum.
+                return undefined;
+            case "Element": {
+                const li = evalGgbList(args[0], scope);
+                const idx = evalGgbNum(args[1], scope);
+                const i = Math.round(idx) - 1;
+                const v = Number.isInteger(i) && i >= 0 && i < li.length ? li[i] : NaN;
+                return () => v;
+            }
+            case "Integral":
+                // Bound to the function variable by default (rare here).
+                return compileIntegralClosure(args, scope, varName);
+        }
+    }
+
+    // A top-level sum embedded in arithmetic, e.g. `a_0 / 2 + Sum[...]`.
+    // Reduce each innermost construct to a closure and splice it into the
+    // residue as a call to a scope-bound function `__ggbt<i>(x)`, then
+    // compile the residue once. At evaluate time each `__ggbt<i>` is the
+    // closure (which closes over x), so the call yields its x-dependent
+    // value. Numeric scope values (sliders, the Sequence loop variable
+    // baked by callers) are spliced as literals so the residue only
+    // references the symbolic function variable plus these helpers.
+    const refs: Array<(x: number) => number> = [];
+    let residue = s;
+    let guard = 0;
+    while (guard++ < 1000) {
+        const c = findInnermostClosureTarget(residue);
+        if (!c) break;
+        const sub = compileToClosure(residue.slice(c.start, c.end), scope, varName);
+        if (!sub) return undefined; // structure not understood → fall back
+        const name = `__ggbt${refs.length}`;
+        refs.push(sub);
+        // Call with the function variable so x-dependent constructs (Sum)
+        // receive it; constant constructs ignore the argument.
+        residue =
+            residue.slice(0, c.start) + `${name}(${varName})` + residue.slice(c.end);
+    }
+    // Bake numeric (non-symbolic) scope entries into the residue text.
+    for (const key of Object.keys(scope)) {
+        if (key === varName) continue;
+        const v = scope[key];
+        if (typeof v === "number" && referencesSymbol(residue, key)) {
+            residue = replaceSymbol(residue, key, formatNumber(v));
+        }
+    }
+    try {
+        const compiled = compileMath(residue);
+        const fnScope: Record<string, unknown> = { ...scope, ...GGB_POW_SCOPE };
+        refs.forEach((fn, i) => { fnScope[`__ggbt${i}`] = fn; });
+        return (x) => {
+            try {
+                fnScope[varName] = x;
+                return extractNumber(compiled.evaluate(fnScope));
+            } catch {
+                return NaN;
+            }
+        };
+    } catch {
+        return undefined;
+    }
+}
+
+/**
+ * Find the innermost Sum/Element/Integral whose body holds no such construct,
+ * so it can be reduced to a single closure first. (Sequence is expanded
+ * inside `compileListTerms`, not here.)
+ */
+function findInnermostClosureTarget(s: string): ConstructCall | undefined {
+    const names = ["Integral", "Element", "Sum"];
+    let best: ConstructCall | undefined;
+    let bestInner = Infinity;
+    for (let i = 0; i < s.length; i++) {
+        for (const name of names) {
+            if (!isConstructAt(s, name, i)) continue;
+            const close = matchBracket(s, i + name.length);
+            if (close === -1) continue;
+            const body = s.slice(i + name.length + 1, close);
+            const inner = countConstructsIn(body, names);
+            if (inner < bestInner) {
+                bestInner = inner;
+                best = { name, start: i, end: close + 1, body };
+            }
+            i = close;
+            break;
+        }
+    }
+    return bestInner === Infinity ? undefined : best;
+}
+
+/**
+ * Compile a `Sum` operand into an array of per-term closures over the function
+ * variable. Handles `Sequence[term, v, s, e]` (expanded: each integer value of
+ * `v` yields a closure that keeps only `varName` symbolic) and bare list
+ * labels (constant terms). Returns undefined when not understood.
+ */
+function compileListTerms(
+    expr: string,
+    scope: Record<string, unknown>,
+    varName: string
+): Array<(x: number) => number> | undefined {
+    const s = ggbToMathJs(expr).trim();
+    const whole = matchWholeConstruct(s);
+    if (whole && whole.name === "Sequence") {
+        const args = splitTopLevel(whole.body);
+        const term = args[0];
+        const v = (args[1] ?? "i").trim();
+        const start = evalGgbNum(args[2] ?? "1", scope);
+        const end = evalGgbNum(args[3] ?? "1", scope);
+        const step = args[4] ? evalGgbNum(args[4], scope) : 1;
+        if (!Number.isFinite(start) || !Number.isFinite(end) || !step || !Number.isFinite(step)) {
+            return [];
+        }
+        const out: Array<(x: number) => number> = [];
+        const dir = step > 0 ? 1 : -1;
+        let val = start;
+        let iter = 0;
+        while (dir > 0 ? val <= end + 1e-9 : val >= end - 1e-9) {
+            if (iter++ > 100000) break;
+            // Bake the loop variable's value into the term text as a literal so
+            // it compiles directly into the residue (e.g. `cos((n * x))` →
+            // `cos((1 * x))`). Otherwise `n` would stay symbolic and be absent
+            // from the per-point evaluate scope, yielding NaN. Whole-token
+            // replace so `n` doesn't match inside `a_n`/`b_n` etc.
+            const bound = replaceSymbol(term, v, formatNumber(val));
+            const sub = compileToClosure(bound, scope, varName);
+            if (!sub) return undefined;
+            out.push(sub);
+            val += step;
+        }
+        return out;
+    }
+    // Bare list label → constant terms (rare for a Sum operand, but supported).
+    const li = evalGgbList(s, scope);
+    if (li.length) return li.map((c) => () => c);
+    return undefined;
+}
+
+/** Compile `Integral[g, a, b]` (or `Integral[g, var, a, b]`) to a closure. */
+function compileIntegralClosure(
+    args: string[],
+    scope: Record<string, unknown>,
+    varName: string
+): ((x: number) => number) | undefined {
+    let gIdx = 0, iv = varName, aIdx = 1, bIdx = 2;
+    if (args.length === 4) { iv = args[1].trim(); aIdx = 2; bIdx = 3; }
+    const g = args[gIdx];
+    const a = evalGgbNum(args[aIdx], scope);
+    const b = evalGgbNum(args[bIdx], scope);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return undefined;
+    // If the integrand references the function variable, the value depends on
+    // x → build an x-dependent closure; otherwise it is a fixed constant.
+    const dependsOnVar = referencesSymbol(g, iv) || iv === varName;
+    if (!dependsOnVar) {
+        const fixed = simpsonAdaptive(
+            (t) => evalGgbNum(g, { ...scope, [iv]: t }), a, b
+        );
+        return () => fixed;
+    }
+    return (x) => simpsonAdaptive(
+        (t) => evalGgbNum(g, { ...scope, [iv]: t, [varName]: x }), a, b
+    );
+}
+
+/** True if `expr` textually mentions identifier `name` as a standalone token. */
+function referencesSymbol(expr: string, name: string): boolean {
+    const re = new RegExp(`(^|[^A-Za-z0-9_])${escapeRe(name)}([^A-Za-z0-9_]|$)`);
+    return re.test(expr);
+}
+
+/** Replace standalone-token occurrences of identifier `name` with `lit`. */
+function replaceSymbol(expr: string, name: string, lit: string): string {
+    const re = new RegExp(
+        `(^|[^A-Za-z0-9_])${escapeRe(name)}([^A-Za-z0-9_]|$)`,
+        "g"
+    );
+    // Preserve the boundary chars (the leading/trailing non-identifier) so
+    // chained replacements like `n * n` stay correct.
+    return expr.replace(re, (_m, pre, post) => `${pre}${lit}${post}`);
+}
+
+/** Escape a literal for use inside a RegExp. */
+function escapeRe(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Compact numeric literal for splicing into expressions. */
+function formatNumber(n: number): string {
+    return Number.isFinite(n) ? String(n) : "0";
 }
 
 /**

@@ -307,11 +307,21 @@ function buildFunctionRenderable(
     // command-produced functions (e.g. FitPoly output with no <expression>) —
     // from the kernel's computed function value.
     let expression: string | undefined;
+    let evaluate: ((x: number) => number) | undefined;
     if (expr?.exp && expr.exp.trim()) {
         expression = expr.exp;
+        // A kernel-resolved function value is live across rebuilds and can
+        // evaluate expressions the mathjs sampler can't compile (e.g. a
+        // Fourier `Sum[Sequence[...]]`); expose it so the renderer samples
+        // it directly instead of re-compiling the raw expression.
+        const fv = kernel?.getValue(label);
+        if (fv?.kind === "function") evaluate = fv.evaluate;
     } else {
         const fv = kernel?.getValue(label);
-        if (fv?.kind === "function") expression = fv.expression;
+        if (fv?.kind === "function") {
+            expression = fv.expression;
+            evaluate = fv.evaluate;
+        }
     }
     if (!expression) return undefined;
 
@@ -321,6 +331,7 @@ function buildFunctionRenderable(
         ...base,
         kind: "function",
         expression,
+        evaluate,
         angleUnit: ggbKernel?.angleUnit === "degree" ? "degree" : "radian",
         xRange,
         yRange,
@@ -394,7 +405,8 @@ function buildPointListRenderable(
     kernel?: KernelLike
 ): RenderablePointList | undefined {
     const kv = kernel?.getValue(element.label);
-    const points = kv?.kind === "list" ? kv.points : [];
+    // Scalar lists (e.g. Fourier coefficients) have no point geometry.
+    const points = kv?.kind === "list" ? (kv.points ?? []) : [];
     const base = buildBase(element.label, element, kernel);
     return {
         ...base,

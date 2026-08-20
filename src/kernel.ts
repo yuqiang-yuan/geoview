@@ -24,7 +24,7 @@
  */
 
 import type { GgbDocument, GgbConstructionItem, GgbElement, GgbExpression } from "./types";
-import { extractExpression, ggbToMathJs, compileMath, GGB_POW_SCOPE } from "./sampler";
+import { extractExpression, ggbToMathJs, compileMath, GGB_POW_SCOPE, evalGgbNum, compileToClosure } from "./sampler";
 import { fitPoly } from "./fitpoly";
 
 // ============================================================
@@ -52,8 +52,11 @@ export interface FunctionValue {
 
 export interface ListValue {
     kind: "list";
-    /** Ordered points (Sequence-of-points is the use case). */
-    points: Array<{ x: number; y: number }>;
+    /** Ordered points (a Sequence-of-points use case). */
+    points?: Array<{ x: number; y: number }>;
+    /** Ordered scalars (a Sequence-of-numbers use case, e.g. Fourier
+     * coefficients `a_n`, `b_n`). Mutually exclusive with `points`. */
+    values?: number[];
 }
 
 export type ResolvedValue = NumberValue | PointValue | FunctionValue | ListValue;
@@ -322,7 +325,10 @@ export class Kernel {
             case "derived-point":
                 return evalPointExpr(recipe.exp, this.buildScope());
             case "derived-number": {
-                const v = evalNumber(recipe.exp, this.buildScope());
+                // Use the structural evaluator so expressions referencing
+                // higher-order commands (e.g. `a_0 = 1/T * Integral[...]`)
+                // resolve; evalNumber only handles plain mathjs.
+                const v = evalGgbNum(recipe.exp, this.buildScope());
                 return Number.isFinite(v)
                     ? { kind: "number", value: v }
                     : undefined;
@@ -346,6 +352,8 @@ export class Kernel {
                 const step = recipe.stepExpr ? evalNumber(recipe.stepExpr, scope) : 1;
                 if (!step || !Number.isFinite(step) || step === 0) return undefined;
                 const points: Array<{ x: number; y: number }> = [];
+                const values: number[] = [];
+                let scalar = false;
                 const dir = step > 0 ? 1 : -1;
                 // Guard against runaway loops (e.g. huge end with tiny step).
                 const maxIter = 100000;
@@ -353,11 +361,22 @@ export class Kernel {
                 let iter = 0;
                 while (dir > 0 ? v <= end : v >= end) {
                     if (iter++ > maxIter) break;
-                    const pt = evalPointExpr(recipe.expr, { ...scope, [recipe.varName]: v });
-                    if (pt) points.push({ x: pt.x, y: pt.y });
+                    const sub = { ...scope, [recipe.varName]: v };
+                    // Prefer a scalar value (e.g. Fourier coefficients via
+                    // Integral); fall back to a point tuple for point sequences.
+                    const num = evalGgbNum(recipe.expr, sub);
+                    if (Number.isFinite(num)) {
+                        scalar = true;
+                        values.push(num);
+                    } else {
+                        const pt = evalPointExpr(recipe.expr, sub);
+                        if (pt) points.push({ x: pt.x, y: pt.y });
+                    }
                     v += step;
                 }
-                return { kind: "list", points };
+                return scalar
+                    ? { kind: "list", values }
+                    : { kind: "list", points };
             }
         }
     }
@@ -367,24 +386,23 @@ export class Kernel {
      * (so a function referencing a slider/number re-reads it on each call).
      */
     private makeFunctionValue(rhs: string): FunctionValue {
-        // Compile defensively: a misclassified expression (e.g. a text label
-        // that slipped past the heuristic) must not crash the whole kernel —
-        // it just yields a non-evaluatable function (NaN).
-        let compiled: (x: number) => number;
-        try {
-            const c = compileMath(ggbToMathJs(rhs));
-            const scope = this.buildScope();
-            compiled = (x: number) => {
-                try {
-                    const r = c.evaluate({ x, ...scope });
-                    return typeof r === "number" ? r : extractNumber(r);
-                } catch {
-                    return NaN;
-                }
-            };
-        } catch {
-            compiled = () => NaN;
-        }
+        // Snapshot the scope once per rebuild so slider-driven coefficients
+        // (a_n, b_n, k) refresh on the next evaluate(). Prefer the closure
+        // compiler: it parses the expression once per rebuild and yields a
+        // tight evaluate-per-point closure, so a Fourier sum costs ~k
+        // multiply-adds per sample point rather than k string recompiles
+        // (which caused visible drag stutter). Falls back to evalGgbNum when
+        // the structure isn't understood — correctness before speed.
+        const scope = this.buildScope();
+        const closure = compileToClosure(rhs, scope, "x");
+        const compiled = (x: number): number => {
+            try {
+                if (closure) return closure(x);
+                return evalGgbNum(rhs, { ...scope, x });
+            } catch {
+                return NaN;
+            }
+        };
         return {
             kind: "function",
             evaluate: compiled,
@@ -410,7 +428,9 @@ export class Kernel {
                     scope[label] = value.evaluate;
                     break;
                 case "list":
-                    // Lists are not referenced by other expressions.
+                    // Scalar lists are referenced by `Element[list, i]`; expose
+                    // them as plain arrays. Point lists are structural only.
+                    if (value.values) scope[label] = value.values;
                     break;
             }
         }

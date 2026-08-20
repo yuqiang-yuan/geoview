@@ -36,7 +36,7 @@ import type {
     SceneAxis,
     Viewport2D
 } from "./render-types";
-import { builtinSampler, sampleParametricCurve } from "./sampler";
+import { builtinSampler, sampleFunction, sampleParametricCurve } from "./sampler";
 import { sampleConic } from "./conic";
 
 // Default colors
@@ -809,7 +809,7 @@ function drawFunction(
     ];
     const yRange: [number, number] = [visYMin, visYMax];
 
-    const result = builtinSampler(r.expression, {
+    const samplerParams = {
         xRange,
         yRange,
         angleUnit: r.angleUnit,
@@ -817,7 +817,13 @@ function drawFunction(
         pixelWidth: vp.width,
         pixelHeight: vp.height,
         scope: r.scope
-    });
+    };
+    // When the kernel supplies a live evaluator (expressions the mathjs
+    // sampler can't compile, e.g. a Fourier `Sum[Sequence[...]]`), sample
+    // it directly; otherwise re-compile the raw expression.
+    const result = r.evaluate
+        ? sampleFunction(r.evaluate, samplerParams)
+        : builtinSampler(r.expression, samplerParams);
     const segments = result.segments;
 
     ctx.strokeStyle = r.color ?? DEFAULT_FUNC;

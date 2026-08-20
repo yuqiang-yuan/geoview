@@ -145,6 +145,13 @@ export interface RenderableFunction extends RenderableBase {
     /** Live numeric scope (slider/parameter values) the expression references,
      * refreshed each rebuild so curves re-sample as their driving sliders move. */
     scope?: Record<string, number>;
+    /**
+     * Kernel-resolved evaluator for expressions the mathjs sampler can't
+     * compile directly (e.g. a Fourier sum using `Sum`/`Sequence`/`Element`).
+     * When present the renderer samples this instead of re-compiling
+     * {@link expression}; otherwise the expression/scope path is used.
+     */
+    evaluate?: (x: number) => number;
 }
 
 /** A point in 2D or 3D space */
@@ -376,7 +383,7 @@ export type ResolvedValue =
     | { kind: "number"; value: number }
     | { kind: "point"; x: number; y: number }
     | { kind: "function"; evaluate: (x: number) => number; expression: string }
-    | { kind: "list"; points: Array<{ x: number; y: number }> };
+    | { kind: "list"; points?: Array<{ x: number; y: number }>; values?: number[] };
 
 export interface SceneBuildOptions {
     /** Force a render mode (auto-detected from document if omitted) */
