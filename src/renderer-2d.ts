@@ -170,7 +170,7 @@ export function createRenderer2D(
                 try {
                     const result = await labelRenderer(task.text, task.opts);
                     if (token !== renderToken) return;
-                    drawLabelResult(ctx, result, task.x, task.y, task.opts);
+                    drawLabelResult(ctx, result, task.x, task.y, task.opts, dpr);
                 } catch {
                     // Fall back to plain text on error
                     drawLabelFallback(ctx, task.text, task.x, task.y, task.opts);
@@ -304,14 +304,19 @@ function drawLabelResult(
     result: LabelRenderResult,
     x: number,
     y: number,
-    opts: LabelOptions
+    opts: LabelOptions,
+    dpr: number
 ): void {
     if (typeof result === "string") {
         drawLabelFallback(ctx, result, x, y, opts);
     } else {
-        // Image or Canvas — draw with drawImage
-        const w = result.width;
-        const h = result.height;
+        // Image or Canvas. Label renderers (e.g. MathJax) produce these at
+        // device resolution, so the intrinsic width/height are backing-store
+        // pixels. The context is scaled by `dpr`, so to place the image at its
+        // intended CSS size we draw at intrinsic/dpr — this maps the image's
+        // device pixels 1:1 onto the backing store (crisp, no upscaling).
+        const w = result.width / dpr;
+        const h = result.height / dpr;
         let dx = x;
         let dy = y;
         const align = opts.align ?? "start";
@@ -321,7 +326,7 @@ function drawLabelResult(
         if (baseline === "middle") dy -= h / 2;
         else if (baseline === "bottom") dy -= h;
         // For "top" and "alphabetic", draw from top
-        ctx.drawImage(result, dx, dy);
+        ctx.drawImage(result, dx, dy, w, h);
     }
 }
 

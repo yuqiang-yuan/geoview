@@ -132,21 +132,24 @@ function splitMathSegments(text: string): Segment[] {
 /**
  * Render a single TeX string to an SVG Image via MathJax. The colour is
  * baked into the SVG (MathJax emits fill="currentColor" which is black in a
- * standalone image). Returns null when rendering fails.
+ * standalone image). Renders at `scale`× the font size so the resulting
+ * image has device-resolution pixels (crisp on high-DPR canvases). Returns
+ * null when rendering fails.
  */
 async function renderMath(
     tex: string,
     display: boolean,
     fontSize: number,
-    color: string
+    color: string,
+    scale: number
 ): Promise<HTMLImageElement | null> {
     try {
         await ensureMathJax();
         const mj = (window as any).MathJax;
         const svgWrapper = await mj.tex2svgPromise(tex, {
             display,
-            em: fontSize,
-            ex: fontSize / 2
+            em: fontSize * scale,
+            ex: (fontSize * scale) / 2
         });
         const svgEl = svgWrapper.querySelector("svg");
         if (!svgEl) return null;
@@ -179,11 +182,12 @@ async function compositeMixed(
     segments: Segment[],
     fontSize: number,
     color: string,
-    serif: boolean
+    serif: boolean,
+    scale: number
 ): Promise<HTMLCanvasElement | null> {
     const fontFamily = serif ? "serif" : "sans-serif";
 
-    // Render math segments to images first.
+    // Render math segments to images first (at device resolution).
     type Laid =
         | { type: "text"; content: string; width: number; height: number }
         | { type: "image"; img: HTMLImageElement; width: number; height: number };
@@ -201,7 +205,7 @@ async function compositeMixed(
             laid.push({ type: "text", content: seg.content, width, height: fontSize });
             totalWidth += width;
         } else {
-            const img = await renderMath(seg.content, seg.display, fontSize, color);
+            const img = await renderMath(seg.content, seg.display, fontSize, color, scale);
             if (!img || !img.width || !img.height) {
                 // Fall back to drawing the raw TeX as text.
                 const content = seg.content;
@@ -209,9 +213,11 @@ async function compositeMixed(
                 laid.push({ type: "text", content, width, height: fontSize });
                 totalWidth += width;
             } else {
+                // img.height is in device pixels (rendered at `scale`×); the
+                // desired CSS height drives the on-screen size.
                 const targetH = seg.display ? fontSize * 1.5 : fontSize * 1.1;
-                const scale = targetH / img.height;
-                const width = img.width * scale;
+                const imgScale = targetH * scale / img.height;
+                const width = img.width * imgScale;
                 laid.push({ type: "image", img, width, height: targetH });
                 totalWidth += width;
             }
@@ -222,14 +228,20 @@ async function compositeMixed(
     }
 
     if (totalWidth <= 0) return null;
+    // Allocate the composite canvas at device resolution and scale its context
+    // so we can keep laying out in CSS coordinates while every pixel maps 1:1
+    // to the backing store (crisp text + crisp math images, no blur on DPR).
     const canvas = document.createElement("canvas");
-    canvas.width = Math.ceil(totalWidth);
-    canvas.height = Math.ceil(maxHeight);
+    canvas.width = Math.ceil(totalWidth * scale);
+    canvas.height = Math.ceil(maxHeight * scale);
     const cctx = canvas.getContext("2d");
     if (!cctx) return null;
+    cctx.setTransform(scale, 0, 0, scale, 0, 0);
     cctx.font = `${fontSize}px ${fontFamily}`;
     cctx.fillStyle = color;
     cctx.textBaseline = "alphabetic";
+    cctx.imageSmoothingEnabled = true;
+    cctx.imageSmoothingQuality = "high";
 
     let x = 0;
     // Text baseline sits near the bottom of the line; place it so the text
@@ -239,6 +251,8 @@ async function compositeMixed(
         if (seg.type === "text") {
             cctx.fillText(seg.content, x, baseline);
         } else {
+            // Draw the device-resolution math image at its CSS size; under the
+            // scale transform this maps image pixels 1:1 to backing pixels.
             cctx.drawImage(seg.img, x, maxHeight - seg.height, seg.width, seg.height);
         }
         x += seg.width;
@@ -254,7 +268,10 @@ export function createMathJaxLabelRenderer() {
         const fontSize = opts?.fontSize ?? 13;
         const color = opts?.color ?? "#1c1c1f";
         const serif = opts?.serif ?? false;
-        const cacheKey = `${text}|${fontSize}|${color}|${serif}`;
+        // Render at device resolution so formulae stay crisp on high-DPR
+        // canvases (the renderer draws the returned image at its CSS size).
+        const scale = (typeof window !== "undefined" && window.devicePixelRatio) || 1;
+        const cacheKey = `${text}|${fontSize}|${color}|${serif}|${scale}`;
         const cached = cache.get(cacheKey);
         if (cached) {
             return cached;
@@ -264,7 +281,7 @@ export function createMathJaxLabelRenderer() {
         if (/\\[\[\]()]/.test(text)) {
             const segments = splitMathSegments(text);
             if (segments.length > 1 || (segments.length === 1 && segments[0].type === "math")) {
-                const canvas = await compositeMixed(segments, fontSize, color, serif);
+                const canvas = await compositeMixed(segments, fontSize, color, serif, scale);
                 if (canvas) {
                     cache.set(cacheKey, canvas);
                     return canvas;
@@ -282,17 +299,14 @@ export function createMathJaxLabelRenderer() {
         }
 
         // Check cache (second key form for the wrapped variant)
-        const wrappedKey = `${latex}|${fontSize}|${color}`;
+        const wrappedKey = `${latex}|${fontSize}|${color}|${scale}`;
         const wrappedCached = cache.get(wrappedKey);
         if (wrappedCached) {
             return wrappedCached;
         }
 
         try {
-            await ensureMathJax();
-            const mj = (window as any).MathJax;
-
-            // Strip LaTeX delimiters — tex2svgPromise expects raw TeX
+            // Strip LaTeX delimiters — the raw TeX is what gets rendered.
             let tex = latex;
             if (tex.startsWith("\\(") && tex.endsWith("\\)")) {
                 tex = tex.slice(2, -2);
@@ -300,27 +314,8 @@ export function createMathJaxLabelRenderer() {
                 tex = tex.slice(2, -2);
             }
 
-            const svgWrapper = await mj.tex2svgPromise(tex, {
-                display: false,
-                em: fontSize,
-                ex: fontSize / 2
-            });
-
-            const svgEl = svgWrapper.querySelector("svg");
-            if (!svgEl) return text;
-
-            const svgStr = new XMLSerializer()
-                .serializeToString(svgEl)
-                .replace(/currentColor/g, color);
-            const dataUrl = "data:image/svg+xml;charset=utf-8," +
-                encodeURIComponent(svgStr);
-
-            const img = new Image();
-            await new Promise<void>((resolve, reject) => {
-                img.onload = () => resolve();
-                img.onerror = () => reject(new Error("Image load failed"));
-                img.src = dataUrl;
-            });
+            const img = await renderMath(tex, false, fontSize, color, scale);
+            if (!img) return text;
 
             cache.set(wrappedKey, img);
             return img;
