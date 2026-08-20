@@ -37,8 +37,19 @@ function getMeasureCtx(): CanvasRenderingContext2D {
  * Configures it for SVG output and lazy startup.
  */
 function ensureMathJax(): Promise<void> {
-    if ((window as any).MathJax) return Promise.resolve();
+    // MathJax is only "ready" once its startup promise resolves. The config
+    // object we install below is truthy, but startup may not have run yet, so
+    // we must not treat its mere presence as readiness — otherwise the first
+    // render calls tex2svgPromise before MathJax is initialised, falls back to
+    // plain text (drawn at the alphabetic baseline), and then a later render
+    // draws the typeset image (drawn from the top) — making the label visibly
+    // jump down on the first interaction.
     if (mjPromise) return mjPromise;
+    const existing = (window as any).MathJax?.startup?.promise as Promise<void> | undefined;
+    if (existing) {
+        mjPromise = existing;
+        return existing;
+    }
 
     mjPromise = new Promise<void>((resolve, reject) => {
         // Configure MathJax before loading
