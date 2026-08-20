@@ -22,6 +22,7 @@ import type {
     Renderable,
     RenderableConic,
     RenderableFunction,
+    RenderableParametricCurve,
     RenderablePoint,
     RenderablePointList,
     RenderableLine,
@@ -35,7 +36,7 @@ import type {
     SceneAxis,
     Viewport2D
 } from "./render-types";
-import { builtinSampler } from "./sampler";
+import { builtinSampler, sampleParametricCurve } from "./sampler";
 import { sampleConic } from "./conic";
 
 // Default colors
@@ -154,6 +155,8 @@ export function createRenderer2D(
                 drawFunction(ctx, r, vp, visXMin, visXMax, visYMin, visYMax, labelTasks);
             } else if (r.kind === "conic") {
                 drawConic(ctx, r, vp, visXMin, visXMax, visYMin, visYMax, labelTasks);
+            } else if (r.kind === "parametric") {
+                drawParametric(ctx, r, vp, visXMin, visXMax, visYMin, visYMax, labelTasks);
             } else {
                 drawRenderable(ctx, r, vp, labelTasks, decimals);
             }
@@ -910,6 +913,83 @@ function drawConic(
         }
     );
     const segments = result;
+
+    ctx.strokeStyle = r.color ?? DEFAULT_FUNC;
+    setLineStyle(ctx, r.lineStyle, r.strokeWidth ?? 3);
+    if (r.opacity !== undefined) {
+        ctx.globalAlpha = r.opacity;
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, vp.width, vp.height);
+    ctx.clip();
+
+    ctx.beginPath();
+    for (const seg of segments) {
+        if (seg.points.length < 2) continue;
+        const first = seg.points[0];
+        ctx.moveTo(pixelX(vp, first.x), pixelY(vp, first.y));
+        for (let i = 1; i < seg.points.length; i++) {
+            const p = seg.points[i];
+            ctx.lineTo(pixelX(vp, p.x), pixelY(vp, p.y));
+        }
+    }
+    ctx.stroke();
+
+    ctx.restore();
+
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+
+    // Draw label at the last point of the last segment
+    if (r.showLabel && segments.length > 0) {
+        const lastSeg = segments[segments.length - 1];
+        if (lastSeg.points.length > 0) {
+            const p = lastSeg.points[lastSeg.points.length - 1];
+            labelTasks.push({
+                text: r.label,
+                x: pixelX(vp, p.x) + 6,
+                y: pixelY(vp, p.y),
+                opts: {
+                    fontSize: 13,
+                    color: r.color ?? DEFAULT_FUNC,
+                    align: "start",
+                    baseline: "middle"
+                }
+            });
+        }
+    }
+}
+
+/**
+ * Draw a CurveCartesian parametric curve `(x(t); y(t))`. Samples against the
+ * visible range (so the curve stays accurate at any zoom) and re-samples live
+ * as its driving sliders change, since the coordinate/range expressions are
+ * carried as strings and compiled at draw time. Mirrors {@link drawConic}.
+ */
+function drawParametric(
+    ctx: CanvasRenderingContext2D,
+    r: RenderableParametricCurve,
+    vp: Viewport2D,
+    visXMin: number,
+    visXMax: number,
+    visYMin: number,
+    visYMax: number,
+    labelTasks: LabelTask[]
+): void {
+    const segments = sampleParametricCurve(
+        r.pointExpr,
+        r.paramVar,
+        r.tRangeExpr,
+        {
+            xRange: [visXMin, visXMax],
+            yRange: [visYMin, visYMax],
+            pixelWidth: vp.width,
+            pixelHeight: vp.height,
+            scope: r.scope
+        }
+    );
 
     ctx.strokeStyle = r.color ?? DEFAULT_FUNC;
     setLineStyle(ctx, r.lineStyle, r.strokeWidth ?? 3);

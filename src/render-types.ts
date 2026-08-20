@@ -103,6 +103,7 @@ export type Renderable =
     | RenderablePolygon
     | RenderableCircle
     | RenderableConic
+    | RenderableParametricCurve
     | RenderableText
     | RenderableSlider;
 
@@ -227,6 +228,30 @@ export interface RenderableConic extends RenderableBase {
     d: number;
     e: number;
     f: number;
+}
+
+/**
+ * A parametric curve from GeoGebra's `CurveCartesian` command — a point
+ * `(x(t); y(t))` traced over a parameter range `[tStart, tEnd]`. The two
+ * coordinate expressions are kept as strings and compiled at draw time so the
+ * curve re-samples live as its driving sliders move (e.g. rose curve
+ * `r = (a·sin(n·θ); θ)` over `[0, 2π]` reshaping as `n`/`a` are dragged).
+ */
+export interface RenderableParametricCurve extends RenderableBase {
+    kind: "parametric";
+    /** The `(x(t); y(t))` point expression, semicolon-separated (CurveCartesian a0). */
+    pointExpr: string;
+    /** Parameter variable name, e.g. `"θ"` (a1). */
+    paramVar: string;
+    /** Parameter range endpoints as GeoGebra expressions, e.g. `["0", "(2*pi)"]` (a2, a3). */
+    tRangeExpr: [string, string];
+    /** Angle unit from kernel settings (reserved; function expressions are always radians). */
+    angleUnit: "degree" | "radian";
+    /** Live numeric scope (slider/parameter values) the expressions reference. */
+    scope?: Record<string, number>;
+    /** Visible data ranges (for pixel-space sampling density + viewport clipping). */
+    xRange: [number, number];
+    yRange: [number, number];
 }
 
 /** Text label */

@@ -954,3 +954,228 @@ export const builtinSampler: SamplerFn = (
     const fn = compileExpression(expression, params.angleUnit, params.scope);
     return sampleFunction(fn, params);
 };
+
+// ============================================================
+// Parametric curves (GeoGebra CurveCartesian)
+// ============================================================
+
+/** Extract a JS number from a mathjs result (Complex/Unit/Matrix fallback). */
+function extractNumber(r: unknown): number {
+    if (typeof r === "number") return r;
+    if (r && typeof (r as { valueOf?: () => unknown }).valueOf === "function") {
+        const v = (r as { valueOf: () => unknown }).valueOf();
+        if (typeof v === "number") return v;
+    }
+    return NaN;
+}
+
+/**
+ * Evaluate a GeoGebra scalar expression (e.g. `"0"`, `"(2*pi)"`) against a
+ * scope. Used to resolve CurveCartesian parameter-range endpoints at draw
+ * time so ranges like `2*pi` resolve without hard-coding.
+ */
+function evalGgbNumber(expr: string, scope: Record<string, unknown>): number {
+    try {
+        const compiled = compileMath(ggbToMathJs(expr));
+        return extractNumber(compiled.evaluate({ ...scope, ...GGB_POW_SCOPE }));
+    } catch {
+        return NaN;
+    }
+}
+
+/**
+ * Split a CurveCartesian point expression into its two coordinate
+ * sub-expressions and report GeoGebra's coordinate mode.
+ *
+ * GeoGebra writes points with a `;` separator for **polar** coordinates
+ * `(radius; angle)` and a `,` separator for **Cartesian** `(x, y)` (this is the
+ * same distinction the kernel's `convertTuplesToArrays` relies on — it treats
+ * only `,` as a tuple separator, leaving `;` for polar). The whole pair may be
+ * wrapped in an outer pair of parentheses, which is stripped.
+ *
+ * Returns `{ mode, parts }` where `parts` is `[a, b]`: for Cartesian `[x, y]`,
+ * for polar `[radius, angle]`. `undefined` if there is no top-level separator.
+ */
+function splitParametricPoint(
+    pointExpr: string
+): { mode: "polar" | "cartesian"; parts: [string, string] } | undefined {
+    let s = pointExpr.trim();
+    // Strip one layer of surrounding parentheses if they wrap the whole expr.
+    if (s.startsWith("(") && s.endsWith(")")) {
+        // Verify the first paren matches the last (balanced outer wrap).
+        let depth = 0;
+        let wraps = true;
+        for (let i = 0; i < s.length; i++) {
+            if (s[i] === "(") depth++;
+            else if (s[i] === ")") {
+                depth--;
+                if (depth === 0 && i !== s.length - 1) { wraps = false; break; }
+            }
+        }
+        if (wraps) s = s.slice(1, -1);
+    }
+    // Find the top-level separator (`;` polar or `,` cartesian), depth 0.
+    let depth = 0;
+    let sep = -1;
+    let mode: "polar" | "cartesian" = "cartesian";
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i];
+        if (c === "(" || c === "[") depth++;
+        else if (c === ")" || c === "]") depth--;
+        else if (depth === 0 && (c === ";" || c === ",")) {
+            sep = i;
+            mode = c === ";" ? "polar" : "cartesian";
+            break;
+        }
+    }
+    if (sep === -1) return undefined;
+    return {
+        mode,
+        parts: [s.slice(0, sep).trim(), s.slice(sep + 1).trim()]
+    };
+}
+
+/** Pixel-space marching bounds for parametric sampling (mirror the conic sampler). */
+const PMAX_STEP_PX = 3;
+const PMIN_STEP_PX = 1;
+const PMAX_STEPS = 6000;
+
+/**
+ * Sample a `CurveCartesian` parametric curve over `[tStart, tEnd]` into
+ * polyline segments. Marches the parameter adaptively so consecutive samples
+ * stay ~1–3px apart (zoom-independent), and splits into a new segment wherever
+ * the curve goes undefined (NaN/Infinity), mirroring the conic sampler.
+ *
+ * The point expression is GeoGebra's point form, decoded by
+ * {@link splitParametricPoint}:
+ *  - Cartesian `(x(t), y(t))` — the two parts ARE x and y.
+ *  - Polar `(r(t); φ(t))` — the two parts are radius and angle; the drawn
+ *    point is `(r·cos φ, r·sin φ)`. The angle is taken in radians, consistent
+ *    with GeoGebra function expressions (`sin(x)` is always radians per
+ *    CLAUDE.md) so a rose `r = a·sin(n·θ); θ` over `[0, 2π]` closes correctly
+ *    even when `angleUnit` is `degree`.
+ */
+export function sampleParametricCurve(
+    pointExpr: string,
+    paramVar: string,
+    tRangeExpr: [string, string],
+    params: {
+        xRange: [number, number];
+        yRange: [number, number];
+        pixelWidth: number;
+        pixelHeight?: number;
+        scope?: Record<string, number>;
+    }
+): PolylineSegment[] {
+    const split = splitParametricPoint(pointExpr);
+    if (!split) return [];
+    const { mode, parts } = split;
+    const [aExpr, bExpr] = parts;
+
+    let aFn: EvalFunction;
+    let bFn: EvalFunction;
+    try {
+        aFn = compileMath(ggbToMathJs(aExpr));
+        bFn = compileMath(ggbToMathJs(bExpr));
+    } catch {
+        return [];
+    }
+
+    const scope = params.scope ?? {};
+    const baseScope = { ...scope, ...GGB_POW_SCOPE };
+    const tStart = evalGgbNumber(tRangeExpr[0], baseScope);
+    const tEnd = evalGgbNumber(tRangeExpr[1], baseScope);
+    if (!Number.isFinite(tStart) || !Number.isFinite(tEnd) || tStart === tEnd) {
+        return [];
+    }
+
+    const [xMin, xMax] = params.xRange;
+    const [yMin, yMax] = params.yRange;
+    const scaleX = params.pixelWidth / Math.max(xMax - xMin, 1e-12);
+    const scaleY = (params.pixelHeight ?? params.pixelWidth)
+        / Math.max(yMax - yMin, 1e-12);
+
+    // A point is "defined" when both coords are finite. Allow generous bounds:
+    // the renderer clips to the canvas, so we keep samples a few screens out.
+    const padX = (xMax - xMin) * 2 + 4;
+    const padY = (yMax - yMin) * 2 + 4;
+
+    const evalPoint = (t: number): { x: number; y: number; ok: boolean } => {
+        try {
+            const s = { ...baseScope, [paramVar]: t };
+            const a = extractNumber(aFn.evaluate(s));
+            const b = extractNumber(bFn.evaluate(s));
+            if (mode === "polar") {
+                // (r; φ) → (r·cos φ, r·sin φ), φ in radians (see fn doc).
+                const x = a * Math.cos(b);
+                const y = a * Math.sin(b);
+                const ok = Number.isFinite(x) && Number.isFinite(y)
+                    && x >= xMin - padX && x <= xMax + padX
+                    && y >= yMin - padY && y <= yMax + padY;
+                return { x, y, ok: Number.isFinite(a) && Number.isFinite(b) && ok };
+            }
+            const x = a;
+            const y = b;
+            const ok = Number.isFinite(x) && Number.isFinite(y)
+                && x >= xMin - padX && x <= xMax + padX
+                && y >= yMin - padY && y <= yMax + padY;
+            return { x, y, ok: Number.isFinite(x) && Number.isFinite(y) && ok };
+        } catch {
+            return { x: NaN, y: NaN, ok: false };
+        }
+    };
+
+    const segments: PolylineSegment[] = [];
+    let current: PolylineSegment = { points: [] };
+    const pushSeg = () => {
+        if (current.points.length > 1) segments.push(current);
+        current = { points: [] };
+    };
+
+    const dir = tEnd > tStart ? 1 : -1;
+    let t = tStart;
+    let dt = dir; // adapted by the first distance check
+    let prev = evalPoint(t);
+    if (prev.ok) current.points.push({ x: prev.x, y: prev.y });
+
+    for (let i = 0; i < PMAX_STEPS; i++) {
+        const p = evalPoint(t + dt);
+        const dpx = Math.hypot((p.x - prev.x) * scaleX, (p.y - prev.y) * scaleY);
+
+        if (p.ok && dpx > PMAX_STEP_PX && Math.abs(dt) > 1e-12) {
+            dt /= 2; // too coarse — halve the parameter step and retry
+            continue;
+        }
+
+        // Crossed a NaN / out-of-bounds boundary → break the segment.
+        if (!p.ok) {
+            // Only advance t; if the curve comes back into range it starts a new seg.
+            if (prev.ok) pushSeg();
+            t += dt;
+            prev = p;
+            // Try to re-acquire once on the far side of the gap.
+            const probe = evalPoint(t);
+            if (probe.ok) {
+                prev = probe;
+                current.points.push({ x: probe.x, y: probe.y });
+            }
+            continue;
+        }
+
+        t += dt;
+        prev = p;
+        current.points.push({ x: p.x, y: p.y });
+
+        // Reached the end?
+        if ((dir > 0 && t >= tEnd) || (dir < 0 && t <= tEnd)) {
+            // Clamp the final sample to tEnd for a clean join.
+            const end = evalPoint(tEnd);
+            if (end.ok) current.points.push({ x: end.x, y: end.y });
+            break;
+        }
+        if (dpx < PMIN_STEP_PX) dt *= 2; // too fine — grow the parameter step
+    }
+
+    pushSeg();
+    return segments;
+}

@@ -19,7 +19,7 @@ export { ggbColorToCss, ggbColorToThree } from "./render-types";
 
 // Rendering — viewport, sampler, scene builder
 export { buildViewport, extractDataRange, fitViewport } from "./viewport";
-export { compileExpression, sampleFunction, builtinSampler, ggbToMathJs } from "./sampler";
+export { compileExpression, sampleFunction, sampleParametricCurve, builtinSampler, ggbToMathJs } from "./sampler";
 export { classifyConic, sampleConic, matrixToCoefficients } from "./conic";
 export type { ConicCoefficients, ConicType, ConicSampleParams } from "./conic";
 export { fitPoly } from "./fitpoly";

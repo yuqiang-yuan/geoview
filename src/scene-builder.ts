@@ -13,6 +13,7 @@ import type {
     RenderableBase,
     RenderableConic,
     RenderableFunction,
+    RenderableParametricCurve,
     RenderablePoint,
     RenderablePointList,
     RenderableSegment,
@@ -141,6 +142,16 @@ export function buildScene(
                 // GeoGebra stores circles/ellipses/parabolas/hyperbolas
                 // uniformly as type="conic" with a packed matrix
                 const r = buildConicRenderable(item);
+                if (r) renderables.push(r);
+            } else if (item.type === "curvecartesian") {
+                // Parametric curve `(x(t); y(t))` over [tStart, tEnd] — the
+                // coordinate/range expressions come from the CurveCartesian
+                // command's inputs and are compiled at draw time so the curve
+                // re-samples live as its driving sliders move.
+                const cmd = outputLabelToCommand.get(item.label);
+                const r = buildParametricRenderable(
+                    item, cmd, doc.kernel, xRange, yRange, kernel
+                );
                 if (r) renderables.push(r);
             } else if (item.type === "ray") {
                 // Ray handled like segment for now (TODO: extend to canvas edge)
@@ -525,6 +536,44 @@ function buildConicRenderable(
         d: co.d,
         e: co.e,
         f: co.f
+    };
+}
+
+/**
+ * Build a parametric-curve renderable from a CurveCartesian element + its
+ * producing command. The command's inputs are:
+ *   a0 = "(x(t); y(t))"  (semicolon-separated point expression)
+ *   a1 = "t"             (parameter variable name)
+ *   a2 = start expr      (e.g. "0")
+ *   a3 = end expr        (e.g. "(2*pi)")
+ * The expressions are carried as strings and compiled at draw time so the
+ * curve re-samples live as its driving sliders (e.g. `n`, `a`) move.
+ */
+function buildParametricRenderable(
+    element: GgbElement,
+    cmd: { name: string; input: string[] } | undefined,
+    ggbKernel: GgbKernel | undefined,
+    xRange: [number, number],
+    yRange: [number, number],
+    kernel?: KernelLike
+): RenderableParametricCurve | undefined {
+    if (!cmd || cmd.input.length < 4) return undefined;
+    const pointExpr = cmd.input[0];
+    const paramVar = cmd.input[1];
+    const tRangeExpr: [string, string] = [cmd.input[2], cmd.input[3]];
+    if (!pointExpr || !paramVar) return undefined;
+
+    const base = buildBase(element.label, element, kernel);
+    return {
+        ...base,
+        kind: "parametric",
+        pointExpr,
+        paramVar,
+        tRangeExpr,
+        angleUnit: ggbKernel?.angleUnit === "degree" ? "degree" : "radian",
+        scope: numericScope(kernel),
+        xRange,
+        yRange
     };
 }
 
