@@ -334,7 +334,16 @@ function drawLabelResult(
         else if (align === "end") dx -= w;
         if (baseline === "middle") dy -= h / 2;
         else if (baseline === "bottom") dy -= h;
-        // For "top" and "alphabetic", draw from top
+        else if (baseline === "alphabetic") {
+            // Match ctx.fillText's alphabetic baseline: the text baseline sits
+            // at `y`, with ascenders above it. A typeset image spans the full
+            // em height, so shift its top up by ~one ascent (≈0.8em) so the
+            // baseline lands at `y` — otherwise the image (drawn from the top)
+            // would sit a full line lower than the plain-text fallback used
+            // when MathJax is still loading, making labels visibly jump.
+            dy -= h * 0.8;
+        }
+        // For "top", draw from the top.
         ctx.drawImage(result, dx, dy, w, h);
     }
 }
@@ -1249,9 +1258,11 @@ function drawText(
 /**
  * Draw a slider (numeric drag control): a track line plus a knob whose
  * position reflects the current value. The track and knob are in math
- * coords so the slider pans/zooms with the rest of the construction. Line
- * thickness, dash style and opacity come from the element's `<lineStyle>`
- * (so e.g. the δ slider's thickness=10/opacity=100 are honoured).
+ * coords so the slider pans/zooms with the rest of the construction — unless
+ * `absolute` (GeoGebra `absoluteScreenLocation`), in which case x/y/width are
+ * screen pixels that stay fixed on screen. Line thickness, dash style and
+ * opacity come from the element's `<lineStyle>` (so e.g. the δ slider's
+ * thickness=10/opacity=100 are honoured).
  */
 function drawSlider(
     ctx: CanvasRenderingContext2D,
@@ -1262,16 +1273,22 @@ function drawSlider(
 ): void {
     const range = r.max - r.min;
     const t = range > 0 ? (r.value - r.min) / range : 0;
-    // Track endpoints in math coords.
+    // Track endpoints. Math coords for a panning slider; screen pixels when
+    // absolute (up = -y in screen space for a vertical slider).
     const w = r.width;
     const start = { x: r.x, y: r.y };
     const end = r.horizontal
         ? { x: r.x + w, y: r.y }
-        : { x: r.x, y: r.y - w }; // vertical: up = +y in math
+        : { x: r.x, y: r.y - w };
     const knob = {
         x: start.x + (end.x - start.x) * t,
         y: start.y + (end.y - start.y) * t
     };
+
+    // Map a slider-space coord to canvas pixels: identity when absolute, else
+    // the viewport math→pixel transform.
+    const sx = (x: number): number => r.absolute ? x : pixelX(vp, x);
+    const sy = (y: number): number => r.absolute ? y : pixelY(vp, y);
 
     const color = r.color ?? "#333333";
     ctx.strokeStyle = color;
@@ -1284,13 +1301,13 @@ function drawSlider(
 
     // Track
     ctx.beginPath();
-    ctx.moveTo(pixelX(vp, start.x), pixelY(vp, start.y));
-    ctx.lineTo(pixelX(vp, end.x), pixelY(vp, end.y));
+    ctx.moveTo(sx(start.x), sy(start.y));
+    ctx.lineTo(sx(end.x), sy(end.y));
     ctx.stroke();
 
     // Knob
-    const kx = pixelX(vp, knob.x);
-    const ky = pixelY(vp, knob.y);
+    const kx = sx(knob.x);
+    const ky = sy(knob.y);
     ctx.beginPath();
     ctx.arc(kx, ky, 5, 0, Math.PI * 2);
     ctx.fill();
@@ -1302,8 +1319,8 @@ function drawSlider(
     if (r.showLabel) {
         labelTasks.push({
             text: r.label,
-            x: pixelX(vp, start.x),
-            y: pixelY(vp, start.y) - 8,
+            x: sx(start.x),
+            y: sy(start.y) - 8,
             opts: {
                 fontSize: r.fontSize ?? 13,
                 color,

@@ -260,7 +260,7 @@ export interface RenderableText extends RenderableBase {
  */
 export interface RenderableSlider extends RenderableBase {
     kind: "slider";
-    /** Track start in math coords (from <slider x=.. y=..>) */
+    /** Track start in math coords, or screen pixels when `absolute` (from <slider x=.. y=..>) */
     x: number;
     y: number;
     min: number;
@@ -268,10 +268,18 @@ export interface RenderableSlider extends RenderableBase {
     step?: number;
     /** Current value */
     value: number;
-    /** Track length in math units (GeoGebra slider "width") */
+    /**
+     * Track length. In math units normally; in screen pixels when `absolute`
+     * (GeoGebra slider "width").
+     */
     width: number;
     /** Horizontal track (false = vertical) */
     horizontal: boolean;
+    /**
+     * When true, x/y/width are screen pixel coordinates that do NOT pan/zoom
+     * with the view (from <slider absoluteScreenLocation="true"/>).
+     */
+    absolute?: boolean;
     /** Font size for the value/label (from GUI font × sizeM, if applicable) */
     fontSize?: number;
 }

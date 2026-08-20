@@ -611,7 +611,9 @@ function parseSlider(el: XmlElement): GgbSlider {
         min: getAttrNum(el, "min") ?? 0,
         max: getAttrNum(el, "max") ?? 1,
         step: getAttrNum(el, "step"),
-        absolute: getAttrBool(el, "absolute"),
+        // GeoGebra emits `absoluteScreenLocation="true"` on the <slider> tag
+        // when its x/y/width are screen pixels (not math coords).
+        absolute: getAttrBool(el, "absoluteScreenLocation"),
         width: getAttrNum(el, "width"),
         horizontal: getAttrBool(el, "horizontal"),
         showSlider: getAttrBool(el, "showSlider"),

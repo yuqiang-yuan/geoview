@@ -13,7 +13,7 @@
  */
 
 import type { GgbDocument, GgbConstructionItem, GgbElement } from "./types";
-import type { SceneBuildOptions, Renderer2D } from "./render-types";
+import type { SceneBuildOptions, Renderer2D, Viewport2D } from "./render-types";
 import { buildScene } from "./scene-builder";
 import { Kernel } from "./kernel";
 import { Animator, type AnimationConfig } from "./animator";
@@ -29,6 +29,12 @@ interface SliderGeom {
     min: number;
     max: number;
     step?: number;
+    /**
+     * When true, x/y/width are screen pixels (GeoGebra
+     * `absoluteScreenLocation`); the slider does not pan/zoom and hit-testing
+     * works directly in canvas CSS px. Otherwise they are math coords.
+     */
+    absolute?: boolean;
 }
 
 /** Options for {@link createInteractive} (mirror the scene build options). */
@@ -216,9 +222,7 @@ export function createInteractive(
         for (const sl of sliders) {
             const val = kernel.getValue(sl.label);
             const value = val?.kind === "number" ? val.value : sl.min;
-            const knob = sliderKnobGeom(sl, value);
-            const kx = vp.xZero + knob.x * vp.scaleX;
-            const ky = vp.yZero - knob.y * vp.scaleY;
+            const { x: kx, y: ky } = sliderKnobPx(sl, value, vp);
             const d = Math.hypot(kx - cx, ky - cy);
             if (d <= HIT_RADIUS_PX && (!best || d < best.dist)) {
                 best = { target: { kind: "slider", label: sl.label }, dist: d };
@@ -253,9 +257,13 @@ export function createInteractive(
             const sl = sliders.find((s) => s.label === active!.label);
             if (!sl) return;
             // Project pointer onto the slider axis → normalized t → value.
+            // Absolute sliders live in screen pixels, so use the pointer's
+            // canvas px directly instead of converting to math coords.
+            const originX = sl.absolute ? cx : math.x;
+            const originY = sl.absolute ? cy : math.y;
             const along = sl.horizontal
-                ? (math.x - sl.x) / sl.width
-                : (sl.y - math.y) / sl.width;
+                ? (originX - sl.x) / sl.width
+                : (sl.y - originY) / sl.width;
             const t = Math.max(0, Math.min(1, along));
             let value = sl.min + t * (sl.max - sl.min);
             if (sl.step && sl.step > 0) {
@@ -335,6 +343,21 @@ function sliderKnobGeom(sl: SliderGeom, value: number): { x: number; y: number }
 }
 
 /**
+ * Knob position in canvas CSS pixels. For absolute sliders the geometry is
+ * already screen pixels (identity); otherwise the math-coord knob is mapped
+ * through the viewport like any other math object.
+ */
+function sliderKnobPx(
+    sl: SliderGeom,
+    value: number,
+    vp: Viewport2D
+): { x: number; y: number } {
+    if (sl.absolute) return sliderKnobGeom(sl, value);
+    const m = sliderKnobGeom(sl, value);
+    return { x: vp.xZero + m.x * vp.scaleX, y: vp.yZero - m.y * vp.scaleY };
+}
+
+/**
  * Collect static slider geometry from numeric elements that carry a `<slider>`.
  * Track anchor (x,y) and length (width) are in math coords/units; min/max/step
  * come from the slider child. Built once; knob position is derived per event.
@@ -351,6 +374,7 @@ function collectSliderGeometry(items: GgbConstructionItem[]): SliderGeom[] {
             y: sl.y ?? 0,
             width: sl.width ?? 1,
             horizontal: sl.horizontal ?? true,
+            absolute: sl.absolute,
             min: sl.min ?? 0,
             max: sl.max ?? 1,
             // GeoGebra sliders may omit an explicit increment on <slider>;

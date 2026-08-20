@@ -732,6 +732,7 @@ function buildSliderRenderable(
         value,
         width: sl.width ?? 4,
         horizontal: sl.horizontal ?? true,
+        absolute: sl.absolute,
         fontSize: guiFontSize
     };
 }
