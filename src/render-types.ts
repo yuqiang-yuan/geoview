@@ -378,12 +378,13 @@ export interface KernelLike {
     setValue(label: string, value: ResolvedValue): void;
 }
 
-/** A resolved kernel value: number, 2D point, compiled function, or point list. */
+/** A resolved kernel value: number, 2D point, compiled function, point list, or line. */
 export type ResolvedValue =
     | { kind: "number"; value: number }
     | { kind: "point"; x: number; y: number }
     | { kind: "function"; evaluate: (x: number) => number; expression: string }
-    | { kind: "list"; points?: Array<{ x: number; y: number }>; values?: number[] };
+    | { kind: "list"; points?: Array<{ x: number; y: number }>; values?: number[] }
+    | { kind: "line"; a: number; b: number; c: number };
 
 export interface SceneBuildOptions {
     /** Force a render mode (auto-detected from document if omitted) */

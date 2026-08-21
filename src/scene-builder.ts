@@ -504,17 +504,32 @@ function buildLineRenderable(
     element: GgbElement,
     kernel?: KernelLike
 ): RenderableLine | undefined {
-    if (!element.coords) return undefined;
-    const c = element.coords;
-
     const base = buildBase(element.label, element, kernel);
+
+    // Prefer the kernel's live line value (a derived line like `y = ε`
+    // re-evaluates as its driving slider changes); fall back to the
+    // GeoGebra save-time snapshot in <coords> when no kernel value exists.
+    const kv = kernel?.getValue(element.label);
+    let a: number;
+    let b: number;
+    let c: number;
+    if (kv?.kind === "line") {
+        a = kv.a;
+        b = kv.b;
+        c = kv.c;
+    } else {
+        if (!element.coords) return undefined;
+        a = element.coords.x;
+        b = element.coords.y;
+        c = element.coords.z;
+    }
 
     return {
         ...base,
         kind: "line",
-        a: c.x,
-        b: c.y,
-        c: c.z,
+        a,
+        b,
+        c,
         // GeoGebra labelMode 2 = "Value": show the line's equation rather than
         // its name. In value mode the graphics view always shows the explicit
         // form (`y = m·x + b`, or `x = const` for a vertical line) regardless
@@ -523,7 +538,7 @@ function buildLineRenderable(
         // plain-text fallback strips the delimiters.
         labelText:
             (base.showLabel && element.labelMode === 2)
-                ? lineEquationLabel(c.x, c.y, c.z)
+                ? lineEquationLabel(a, b, c)
                 : undefined
     };
 }

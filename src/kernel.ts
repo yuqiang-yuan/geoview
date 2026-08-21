@@ -59,7 +59,15 @@ export interface ListValue {
     values?: number[];
 }
 
-export type ResolvedValue = NumberValue | PointValue | FunctionValue | ListValue;
+/** Homogeneous line coefficients for `a·x + b·y + c = 0`. */
+export interface LineValue {
+    kind: "line";
+    a: number;
+    b: number;
+    c: number;
+}
+
+export type ResolvedValue = NumberValue | PointValue | FunctionValue | ListValue | LineValue;
 
 /** A free (draggable) object: a point or a slider. */
 export interface FreeObject {
@@ -78,7 +86,8 @@ type Recipe =
     | { kind: "derived-number"; exp: string }
     | { kind: "function-expr"; rhs: string }
     | { kind: "fitpoly"; pointLabels: string[]; degree: number }
-    | { kind: "sequence"; expr: string; varName: string; startExpr: string; endExpr: string; stepExpr?: string };
+    | { kind: "sequence"; expr: string; varName: string; startExpr: string; endExpr: string; stepExpr?: string }
+    | { kind: "line"; exp: string };
 
 // ============================================================
 // Kernel
@@ -282,6 +291,18 @@ export class Kernel {
             return undefined;
         }
 
+        // Line object: an explicit equation (`y = ε`, `x = 2`, `y = m x + b`).
+        // GeoGebra stores a save-time snapshot of the homogeneous coefficients
+        // in <element coords>, which goes stale the moment a free input (ε)
+        // changes. Evaluate the equation live so a derived line tracks its
+        // inputs, like a derived point does.
+        if (el?.type === "line" || expr?.type === "line") {
+            if (expr?.exp && expr.exp.includes("=")) {
+                return { kind: "line", exp: expr.exp };
+            }
+            return undefined;
+        }
+
         // Function defined directly by an expression f(x) = ...
         // Also treat an explicit conic written as `y = ...` (e.g. the parabola
         // `y = 0.4 * x^(2)`, stored as type="conic") as a function so that
@@ -324,6 +345,8 @@ export class Kernel {
                 return { kind: "number", value: recipe.initialValue };
             case "derived-point":
                 return evalPointExpr(recipe.exp, this.buildScope());
+            case "line":
+                return evalLineExpr(recipe.exp, this.buildScope());
             case "derived-number": {
                 // Use the structural evaluator so expressions referencing
                 // higher-order commands (e.g. `a_0 = 1/T * Integral[...]`)
@@ -547,6 +570,30 @@ function evalPointConst(exp: string): PointValue | undefined {
     } catch {
         return undefined;
     }
+}
+
+/**
+ * Evaluate a GeoGebra line equation against a scope, returning the
+ * homogeneous coefficients of `a·x + b·y + c = 0`. Supports the explicit
+ * forms GeoGebra writes for derived lines:
+ *   `y = <rhs>`  → (0, 1, -rhs)        horizontal form (rhs may depend on ε)
+ *   `x = <rhs>`  → (1, 0, -rhs)        vertical form
+ * The rhs is evaluated live via the structural evaluator so a line like
+ * `y = ε` tracks its driving slider. Returns undefined when the equation
+ * cannot be parsed or the rhs does not resolve to a finite number.
+ */
+function evalLineExpr(exp: string, scope: Record<string, unknown>): LineValue | undefined {
+    const eqIdx = exp.indexOf("=");
+    if (eqIdx === -1) return undefined;
+    const lhs = exp.slice(0, eqIdx).trim();
+    const rhs = exp.slice(eqIdx + 1).trim();
+    if (!rhs) return undefined;
+    const k = evalGgbNum(rhs, scope);
+    if (!Number.isFinite(k)) return undefined;
+    // `y = ...` → 0·x + 1·y - k = 0 ; `x = ...` → 1·x + 0·y - k = 0.
+    if (lhs === "y" || lhs === "Y") return { kind: "line", a: 0, b: 1, c: -k };
+    if (lhs === "x" || lhs === "X") return { kind: "line", a: 1, b: 0, c: -k };
+    return undefined;
 }
 
 /**
