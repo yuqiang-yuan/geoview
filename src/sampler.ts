@@ -263,6 +263,16 @@ function parseFunctionVar(expression: string): string {
 }
 
 /**
+ * Detect the bound variable of a function expression like `f(t) = ...` (or
+ * fall back to `x`). Exported so the kernel can compile a per-point closure
+ * against the correct symbol — a function whose variable is `t` would
+ * otherwise be sampled as all-NaN when the closure assumes `x`.
+ */
+export function detectFunctionVar(expression: string): string {
+    return parseFunctionVar(expression);
+}
+
+/**
  * Compile a GeoGebra expression into an evaluatable function.
  *
  * Note: GeoGebra's `angleUnit` setting affects angle-typed objects (e.g. 45°)

@@ -24,7 +24,7 @@
  */
 
 import type { GgbDocument, GgbConstructionItem, GgbElement, GgbExpression } from "./types";
-import { extractExpression, ggbToMathJs, compileMath, GGB_POW_SCOPE, evalGgbNum, compileToClosure } from "./sampler";
+import { extractExpression, ggbToMathJs, compileMath, GGB_POW_SCOPE, evalGgbNum, compileToClosure, detectFunctionVar } from "./sampler";
 import { fitPoly } from "./fitpoly";
 
 // ============================================================
@@ -84,7 +84,7 @@ type Recipe =
     | { kind: "free-number"; min: number; max: number; step?: number; initialValue: number }
     | { kind: "derived-point"; exp: string }
     | { kind: "derived-number"; exp: string }
-    | { kind: "function-expr"; rhs: string }
+    | { kind: "function-expr"; rhs: string; varName: string }
     | { kind: "fitpoly"; pointLabels: string[]; degree: number }
     | { kind: "sequence"; expr: string; varName: string; startExpr: string; endExpr: string; stepExpr?: string }
     | { kind: "line"; exp: string };
@@ -310,7 +310,7 @@ export class Kernel {
         if (el?.type === "function" || expr?.type === "function"
             || (el?.type === "conic" && el.eqnStyle === "explicit")) {
             if (expr?.exp && expr.exp.includes("=")) {
-                return { kind: "function-expr", rhs: extractExpression(expr.exp) };
+                return { kind: "function-expr", rhs: extractExpression(expr.exp), varName: detectFunctionVar(expr.exp) };
             }
             return undefined; // produced by a command (e.g. FitPoly) or no expr
         }
@@ -321,7 +321,7 @@ export class Kernel {
         // functions, then fail to compile as mathjs and crash evaluation.
         if (expr?.exp && !expr.type && expr.exp.includes("(") && expr.exp.includes("=")
             && !expr.exp.trimStart().startsWith("\"")) {
-            return { kind: "function-expr", rhs: extractExpression(expr.exp) };
+            return { kind: "function-expr", rhs: extractExpression(expr.exp), varName: detectFunctionVar(expr.exp) };
         }
 
         // Derived scalar: a bare expression with no type that is neither a
@@ -357,7 +357,7 @@ export class Kernel {
                     : undefined;
             }
             case "function-expr":
-                return this.makeFunctionValue(recipe.rhs);
+                return this.makeFunctionValue(recipe.rhs, recipe.varName);
             case "fitpoly": {
                 const pts = recipe.pointLabels
                     .map((l) => this.values.get(l))
@@ -408,7 +408,7 @@ export class Kernel {
      * Build a function value whose evaluate closes over the current scope
      * (so a function referencing a slider/number re-reads it on each call).
      */
-    private makeFunctionValue(rhs: string): FunctionValue {
+    private makeFunctionValue(rhs: string, varName: string = "x"): FunctionValue {
         // Snapshot the scope once per rebuild so slider-driven coefficients
         // (a_n, b_n, k) refresh on the next evaluate(). Prefer the closure
         // compiler: it parses the expression once per rebuild and yields a
@@ -417,11 +417,11 @@ export class Kernel {
         // (which caused visible drag stutter). Falls back to evalGgbNum when
         // the structure isn't understood — correctness before speed.
         const scope = this.buildScope();
-        const closure = compileToClosure(rhs, scope, "x");
+        const closure = compileToClosure(rhs, scope, varName);
         const compiled = (x: number): number => {
             try {
                 if (closure) return closure(x);
-                return evalGgbNum(rhs, { ...scope, x });
+                return evalGgbNum(rhs, { ...scope, [varName]: x });
             } catch {
                 return NaN;
             }
