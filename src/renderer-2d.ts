@@ -47,15 +47,6 @@ const DEFAULT_FUNC = "#006758";
 
 const DEFAULT_SAMPLES = 800;
 
-/**
- * LaTeX formula text (fractions, roots, superscripts) needs more vertical
- * room than plain prose to stay legible at the GUI font size, which GeoGebra
- * files set small (typically 16px). Scale isLatex text up at draw time so
- * complex formulae like the curvature-circle's nested fractions read clearly.
- * Applied in the renderer only — the renderable's stored fontSize is unchanged.
- */
-const LATEX_TEXT_SCALE = 2.0;
-
 /** A label draw task — collected during sync render, drawn async. */
 interface LabelTask {
     text: string;
@@ -1309,12 +1300,7 @@ function drawText(
     // Absolute-screen text: x/y are already pixel coords (do not pan/zoom).
     const px = r.absolute ? r.x : pixelX(vp, r.x);
     const py = r.absolute ? r.y : pixelY(vp, r.y);
-    const baseFontSize = r.fontSize ?? 13;
-    // Complex LaTeX formulae are illegible at the raw GUI font size; render
-    // isLatex text larger (see LATEX_TEXT_SCALE).
-    const fontSize = r.isLatex
-        ? Math.round(baseFontSize * LATEX_TEXT_SCALE)
-        : baseFontSize;
+    const fontSize = r.fontSize ?? 13;
 
     // LaTeX content is passed through so a LaTeX-aware label renderer
     // (e.g. MathJax) picks it up verbatim. Content without any math delimiters
