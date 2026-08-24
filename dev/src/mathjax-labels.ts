@@ -165,9 +165,25 @@ async function renderMath(
         const svgEl = svgWrapper.querySelector("svg");
         if (!svgEl) return null;
 
-        const svgStr = new XMLSerializer()
-            .serializeToString(svgEl)
-            .replace(/currentColor/g, color);
+        // MathJax renders unparseable TeX as an <merror> block whose message
+        // text and background rect both carry fill="currentColor". In a
+        // standalone <img> there is no CSS context, so currentColor resolves
+        // to the (dark) label colour — turning a genuinely broken formula into
+        // a solid, illegible block of that colour instead of MathJax's
+        // familiar red error. When the output is an error, restore the
+        // conventional red text on a light background so malformed \[...\]
+        // formulae are visibly flagged rather than silently hidden.
+        let svgStr = new XMLSerializer().serializeToString(svgEl);
+        if (/data-mml-node="merror"/.test(svgStr)) {
+            svgStr = svgStr
+                .replace(
+                    /<rect data-background="true"/g,
+                    '<rect data-background="true" fill="#FFCCCC"'
+                )
+                .replace(/currentColor/g, "#CC0000");
+        } else {
+            svgStr = svgStr.replace(/currentColor/g, color);
+        }
         const dataUrl = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svgStr);
 
         const img = new Image();
