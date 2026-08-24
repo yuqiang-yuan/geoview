@@ -240,11 +240,17 @@ async function compositeMixed(
                 laid.push({ type: "text", content, width, height: fontSize });
                 totalWidth += width;
             } else {
-                // img.height is in device pixels (rendered at `scale`×); the
-                // desired CSS height drives the on-screen size.
+                // img.width/height are device pixels (rendered at `scale`×),
+                // but we lay out in CSS coordinates (the context is scaled by
+                // `scale`). Convert to CSS pixels first, then scale to the
+                // target CSS height — otherwise mixing device-pixel width
+                // with CSS-pixel height doubles the aspect ratio and stretches
+                // the formula horizontally (flattening it).
                 const targetH = seg.display ? fontSize * 1.5 : fontSize * 1.1;
-                const imgScale = targetH * scale / img.height;
-                const width = img.width * imgScale;
+                const cssW = img.width / scale;
+                const cssH = img.height / scale;
+                const imgScale = cssH > 0 ? targetH / cssH : 0;
+                const width = cssW * imgScale;
                 laid.push({ type: "image", img, width, height: targetH });
                 totalWidth += width;
             }
