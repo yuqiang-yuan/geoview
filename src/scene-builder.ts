@@ -12,6 +12,7 @@ import type {
     Renderable,
     RenderableBase,
     RenderableConic,
+    RenderableCircle,
     RenderableFunction,
     RenderableParametricCurve,
     RenderablePoint,
@@ -141,7 +142,8 @@ export function buildScene(
             } else if (item.type === "conic") {
                 // GeoGebra stores circles/ellipses/parabolas/hyperbolas
                 // uniformly as type="conic" with a packed matrix
-                const r = buildConicRenderable(item);
+                const cmd = outputLabelToCommand.get(item.label);
+                const r = buildConicRenderable(item, cmd, kernel);
                 if (r) renderables.push(r);
             } else if (item.type === "curvecartesian") {
                 // Parametric curve `(x(t); y(t))` over [tStart, tEnd] — the
@@ -302,6 +304,13 @@ function buildFunctionRenderable(
 ): RenderableFunction | undefined {
     const label = expr?.label ?? element?.label ?? "";
     if (expr && expr.type && expr.type !== "function") return undefined;
+    // A derived scalar (numeric/boolean) is not a curve — its <expression>
+    // is a value formula like `r = (1 + (0.8·a)²)^1.5 / 0.8`, not a function
+    // definition `f(x) = ...`. Because such a formula references the slider
+    // (not x), sampling it yields a horizontal line at y = value that sweeps
+    // as the slider moves. GeoGebra shows scalars only as values/labels
+    // (e.g. spliced into text via LaTeX[r]), never as curves.
+    if (element?.type === "numeric" || element?.type === "boolean") return undefined;
 
     // Resolve the expression string: from the <expression>, or — for
     // command-produced functions (e.g. FitPoly output with no <expression>) —
@@ -545,10 +554,38 @@ function buildLineRenderable(
 
 /**
  * Build a conic renderable from an element's packed matrix.
+ *
+ * For a `Circle[centerPoint, radiusNumber]` the packed `<matrix>` is a
+ * save-time snapshot — frozen, so the circle does not follow the slider that
+ * drives its center/radius. When the producing command is `Circle` and the
+ * kernel resolves the center (a point) and radius (a number) live, derive the
+ * circle from those current values instead of the snapshot matrix, so it
+ * tracks dragging. (Other conics — explicit parabolas, ellipses from a
+ * command, etc. — have no such two-argument recipe here, and fall back to the
+ * static matrix as before.)
  */
 function buildConicRenderable(
-    element: GgbElement
-): RenderableConic | undefined {
+    element: GgbElement,
+    cmd: { name: string; input: string[] } | undefined,
+    kernel?: KernelLike
+): RenderableConic | RenderableCircle | undefined {
+    // Circle[centerPoint, radiusNumber] → live circle from kernel values.
+    if (cmd?.name === "Circle" && cmd.input.length >= 2 && kernel) {
+        const kCenter = kernel.getValue(cmd.input[0]);
+        const kRadius = kernel.getValue(cmd.input[1]);
+        if (kCenter?.kind === "point" && kRadius?.kind === "number" &&
+            Number.isFinite(kRadius.value)) {
+            const base = buildBase(element.label, element, kernel);
+            return {
+                ...base,
+                kind: "circle",
+                centerX: kCenter.x,
+                centerY: kCenter.y,
+                radius: kRadius.value
+            };
+        }
+    }
+
     if (!element.matrix) return undefined;
     const co = matrixToCoefficients(element.matrix);
 
