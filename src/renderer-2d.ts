@@ -1387,29 +1387,55 @@ function drawSlider(
     ctx.globalAlpha = 1;
     ctx.setLineDash([]);
 
-    // Label: name at the start, value near the knob.
+    // Slider label follows the knob as one unit ("a = 0"), per GeoGebra's
+    // labelMode: 0=NAME, 1=NAME_VALUE (the default for sliders), 2=VALUE,
+    // 3=CAPTION. It is drawn synchronously here rather than deferred to the
+    // async labelRenderer pipeline: a slider with no `step` changes value on
+    // every pointermove, so a combined "a = 0.012" label would be a fresh
+    // cache miss each frame and the async render would be cancelled by the
+    // next frame's token before completing — the label would vanish while
+    // dragging. Drawing directly keeps it live every frame. The variable name
+    // is italicised to match GeoGebra's slider styling.
     if (r.showLabel) {
-        labelTasks.push({
-            text: r.label,
-            x: sx(start.x),
-            y: sy(start.y) - 8,
-            opts: {
-                fontSize: r.fontSize ?? 13,
-                color,
-                align: "start",
-                baseline: "bottom"
-            }
-        });
-    }
-    labelTasks.push({
-        text: formatNumber(r.value, decimals),
-        x: kx,
-        y: ky - 8,
-        opts: {
-            fontSize: r.fontSize ?? 12,
-            color,
-            align: "middle",
-            baseline: "bottom"
+        const mode = r.labelMode ?? 1;
+        const size = r.fontSize ?? 13;
+        const yTop = ky - 8;
+        ctx.textBaseline = "bottom";
+        ctx.textAlign = "left";
+        ctx.fillStyle = color;
+
+        let namePart = "";
+        let valuePart = "";
+        if (mode === 2) {
+            valuePart = formatNumber(r.value, decimals);
+        } else if (mode === 0 || mode === 3) {
+            // NAME, or CAPTION (sliders don't carry a caption here → name).
+            namePart = r.label;
+        } else {
+            // NAME_VALUE (1) — the slider default.
+            namePart = r.label;
+            valuePart = " = " + formatNumber(r.value, decimals);
         }
-    });
+
+        // Measure both halves so the combined label can be centred above the knob.
+        ctx.font = `italic ${size}px sans-serif`;
+        const nameW = namePart ? ctx.measureText(namePart).width : 0;
+        ctx.font = `${size}px sans-serif`;
+        const valW = valuePart ? ctx.measureText(valuePart).width : 0;
+
+        let x = kx - (nameW + valW) / 2;
+        if (namePart) {
+            ctx.font = `italic ${size}px sans-serif`;
+            ctx.fillText(namePart, x, yTop);
+            x += nameW;
+        }
+        if (valuePart) {
+            ctx.font = `${size}px sans-serif`;
+            ctx.fillText(valuePart, x, yTop);
+        }
+
+        // Restore default text state so it doesn't leak into later draws.
+        ctx.textAlign = "start";
+        ctx.textBaseline = "alphabetic";
+    }
 }

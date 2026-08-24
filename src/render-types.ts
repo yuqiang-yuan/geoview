@@ -125,6 +125,8 @@ export interface RenderableBase {
     opacity?: number;
     /** Whether to show the label text */
     showLabel: boolean;
+    /** GeoGebra label mode: 0=NAME, 1=NAME_VALUE, 2=VALUE, 3=CAPTION */
+    labelMode?: number;
     /** Z-order for rendering (lower = behind) */
     zOrder: number;
 }

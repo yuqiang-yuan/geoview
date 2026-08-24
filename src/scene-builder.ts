@@ -872,6 +872,7 @@ function buildBase(
             ? element.lineStyle.opacity / 255
             : undefined,
         showLabel: element?.show?.label ?? false,
+        labelMode: element?.labelMode,
         zOrder: element?.ordering ?? 0
     };
 }
