@@ -774,8 +774,17 @@ function buildTextRenderable(
 
     const base = buildBase(label, element, kernel);
 
-    const size = element?.font?.size ?? 0;
+    // GeoGebra encodes a text's font size two ways on the same <font> tag:
+    // `size` (a signed offset relative to the GUI base font size, e.g.
+    // size=7 → base+7, size=-8 → base-8) and `sizeM` (the same value as a
+    // multiplier, e.g. sizeM=1.4 → base×1.4). They are redundant and agree
+    // to within rounding for every fixture. Use the multiplier form uniformly
+    // — the old code took `size` as an absolute pixel size when positive
+    // (size=7 → rendered at 7px instead of base+7≈23px), so title text came
+    // out far too small. `sizeM` defaults to 1, and a missing <font> tag
+    // falls back to the GUI base size.
     const sizeM = element?.font?.sizeM ?? 1;
+    const fontSize = Math.round((guiFontSize ?? 16) * sizeM);
 
     // Absolute screen positioning takes precedence over everything else.
     const abs = element?.absoluteScreenLocation;
@@ -787,7 +796,7 @@ function buildTextRenderable(
             x: abs.x,
             y: abs.y,
             absolute: true,
-            fontSize: size > 0 ? size : Math.round((guiFontSize ?? 16) * sizeM),
+            fontSize,
             isLatex: element?.isLaTeX,
             serif: element?.font?.isSerif
         };
@@ -808,7 +817,7 @@ function buildTextRenderable(
         content,
         x,
         y,
-        fontSize: size > 0 ? size : Math.round((guiFontSize ?? 16) * sizeM),
+        fontSize,
         isLatex: element?.isLaTeX,
         serif: element?.font?.isSerif
     };
